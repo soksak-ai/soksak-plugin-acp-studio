@@ -241,7 +241,12 @@ var CSS = `
 .st-fail{align-self:flex-start;max-width:88%;font-size:11.5px;color:var(--danger-soft,#d77);border:1px solid var(--danger-soft,#d77);border-radius:8px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;opacity:.85}
 .st-box-time{display:block;text-align:right;font-size:9px;opacity:.5;margin-top:3px;font-variant-numeric:tabular-nums}
 @keyframes st-pulse{0%,100%{opacity:.25}50%{opacity:1}}
-.st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto}
+.st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto;position:relative}
+.st-mention{position:absolute;left:10px;bottom:calc(100% + 4px);min-width:160px;background:var(--bg2,#262626);border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:20}
+.st-mention-item{display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:6px;cursor:pointer;font-size:12.5px}
+.st-mention-item.on{background:rgba(127,127,127,.2)}
+.st-mention-at{opacity:.6}
+.st-mention-nm{font-weight:600;color:var(--fg,#ddd)}
 .st-in textarea{flex:1;resize:none;background:rgba(127,127,127,.1);color:inherit;border:1px solid rgba(127,127,127,.25);border-radius:7px;padding:7px 9px;font:inherit;min-height:20px;max-height:120px}
 .st-in button{background:#2d6cdf;color:#fff;border:0;border-radius:7px;padding:0 14px;cursor:pointer;font:inherit;font-weight:600}
 .st-cut{font-weight:400;opacity:.7;font-size:9px;font-style:italic} /* \uCC38\uACAC\uC73C\uB85C \uC911\uB2E8\uB41C \uBD80\uBD84\uC751\uB2F5 \uD45C\uC2DD */
@@ -254,7 +259,7 @@ var main_default = {
     const settingPolicy = () => app.settings?.get("permissionPolicy") || void 0;
     const settingMode = () => {
       const v = app.settings?.get("kibitzDefault");
-      return v === "facil" || v === "simul" ? v : "turn";
+      return v === "turn" || v === "simul" ? v : "facil";
     };
     const settingDepthCap = () => Math.max(1, Number(app.settings?.get("nameTriggerDepthCap")) || 4);
     const settingFacilMax = () => Math.max(1, Number(app.settings?.get("facilMaxRounds")) || FACIL_MAX_ROUNDS);
@@ -428,11 +433,13 @@ var main_default = {
       const msgs = el("div", "st-msgs");
       const inrow = el("div", "st-in");
       const ta = document.createElement("textarea");
-      ta.placeholder = "\uBA54\uC2DC\uC9C0\u2026 (Enter \uC804\uC1A1, Shift+Enter \uC904\uBC14\uAFC8) \u2014 \uC5B8\uC81C\uB098 \uCC38\uACAC \uAC00\uB2A5";
+      ta.placeholder = "\uBA54\uC2DC\uC9C0\u2026 (Enter \uC804\uC1A1, Shift+Enter \uC904\uBC14\uAFC8, @\uB85C \uBAA8\uB378 \uC9C0\uBAA9) \u2014 \uC5B8\uC81C\uB098 \uCC38\uACAC \uAC00\uB2A5";
       ta.rows = 1;
       const send = document.createElement("button");
       send.textContent = "\uC804\uC1A1";
-      inrow.append(ta, send);
+      const mentionPop = el("div", "st-mention");
+      mentionPop.style.display = "none";
+      inrow.append(mentionPop, ta, send);
       const st = {
         roster: ACTIVE_AGENTS.map((a) => ({ id: a.id, checked: true })),
         mode: settingMode(),
@@ -459,10 +466,80 @@ var main_default = {
         const t = ta.value.trim();
         if (!t) return;
         ta.value = "";
+        hideMention();
         onHuman(st, t);
       };
+      let menTokens = [];
+      let menActive = -1;
+      let menStart = -1;
+      const hideMention = () => {
+        mentionPop.style.display = "none";
+        menActive = -1;
+        menStart = -1;
+      };
+      const renderMention = () => {
+        mentionPop.replaceChildren();
+        menTokens.forEach((t, i) => {
+          const row = el("div", "st-mention-item" + (i === menActive ? " on" : ""));
+          row.style.color = COLOR[t.id] ?? "var(--fg,#ddd)";
+          row.append(elText("span", "@", "st-mention-at"), elText("span", t.label, "st-mention-nm"));
+          row.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            pickMention(i);
+          });
+          mentionPop.appendChild(row);
+        });
+      };
+      const pickMention = (i) => {
+        const tok = menTokens[i];
+        if (!tok || menStart < 0) return;
+        const before = ta.value.slice(0, menStart);
+        const after = ta.value.slice(ta.selectionStart);
+        const insert = `@${tok.label} `;
+        ta.value = before + insert + after;
+        const caret = before.length + insert.length;
+        ta.setSelectionRange(caret, caret);
+        hideMention();
+        ta.focus();
+      };
+      const updateMention = () => {
+        const caret = ta.selectionStart;
+        const pre = ta.value.slice(0, caret);
+        const m = /@([^\s@]*)$/.exec(pre);
+        if (!m) return hideMention();
+        const q = m[1].toLowerCase();
+        const checked = new Set(participants(st.roster));
+        menTokens = ACTIVE_AGENTS.filter((a) => checked.has(a.id)).map((a) => ({ label: a.label, id: a.id })).filter((t) => !q || t.label.toLowerCase().startsWith(q) || t.id.startsWith(q));
+        if (!menTokens.length) return hideMention();
+        menStart = caret - m[0].length;
+        menActive = 0;
+        renderMention();
+        mentionPop.style.display = "block";
+      };
       send.addEventListener("click", doSend);
+      ta.addEventListener("input", updateMention);
       ta.addEventListener("keydown", (e) => {
+        const open = mentionPop.style.display !== "none";
+        if (open) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            menActive = (menActive + 1) % menTokens.length;
+            return renderMention();
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            menActive = (menActive - 1 + menTokens.length) % menTokens.length;
+            return renderMention();
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            return pickMention(menActive);
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            return hideMention();
+          }
+        }
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           doSend();
@@ -487,7 +564,7 @@ var main_default = {
         b.addEventListener("click", () => setMode(st, m));
         return b;
       };
-      st.kibEl.append(mk("turn", "\uC21C\uCC28"), mk("facil", "\uC9C4\uD589"), mk("simul", "\uB3D9\uC2DC"));
+      st.kibEl.append(mk("facil", "\uC9C4\uD589"), mk("turn", "\uC21C\uCC28"), mk("simul", "\uB3D9\uC2DC"));
     }
     function renderTabs(st, tabsEl) {
       tabsEl.replaceChildren();
@@ -728,12 +805,44 @@ var main_default = {
       }
       setStatus(st, "\uC9C4\uD589 \uD55C\uB3C4 \uB3C4\uB2EC \u2014 \uB9C8\uBB34\uB9AC");
     }
+    function humanTargets(st) {
+      const ids = st.roster.map((r) => r.id);
+      const checked = new Set(participants(st.roster));
+      const targets = [];
+      for (let i = st.conv.length - 1; i >= 0; i--) {
+        if (st.conv[i].who !== "human") break;
+        for (const id of detectMentions(st.conv[i].text, ids, "human", nameOf)) {
+          if (checked.has(id) && !targets.includes(id)) targets.push(id);
+        }
+      }
+      return targets;
+    }
+    async function driveTargeted(st, ids, targets) {
+      const snapshot = st.conv.slice();
+      await Promise.all(
+        targets.map(async (id) => {
+          setStatus(st, `${nameOf(id)} \uC751\uB2F5 \uC911\u2026`);
+          const prompt = buildPrompt({
+            roster: st.roster,
+            conversation: snapshot,
+            speaker: id,
+            nameOf,
+            preamble: inviteePreamble(id, ids, nameOf, st.cwd, "simul")
+          });
+          const w = await runOneTurn(st, id, prompt);
+          if (w) st.conv.push({ who: id, text: w });
+        })
+      );
+    }
     async function runLoop(st) {
       st.running = true;
       const ids = st.roster.map((x) => x.id);
       for (; ; ) {
         const scanFrom = st.conv.length;
-        if (st.mode === "simul") {
+        const targets = humanTargets(st);
+        if (targets.length) {
+          await driveTargeted(st, ids, targets);
+        } else if (st.mode === "simul") {
           await driveSimul({
             roster: st.roster,
             conversation: st.conv,
@@ -751,7 +860,7 @@ var main_default = {
           injectPending(st);
           continue;
         }
-        if (st.mode !== "facil") {
+        if (!targets.length && st.mode !== "facil") {
           await resolveMentions(st, scanFrom);
           if (st.pendingHuman.length) {
             injectPending(st);

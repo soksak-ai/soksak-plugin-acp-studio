@@ -76,7 +76,12 @@ const CSS = `
 .st-fail{align-self:flex-start;max-width:88%;font-size:11.5px;color:var(--danger-soft,#d77);border:1px solid var(--danger-soft,#d77);border-radius:8px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;opacity:.85}
 .st-box-time{display:block;text-align:right;font-size:9px;opacity:.5;margin-top:3px;font-variant-numeric:tabular-nums}
 @keyframes st-pulse{0%,100%{opacity:.25}50%{opacity:1}}
-.st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto}
+.st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto;position:relative}
+.st-mention{position:absolute;left:10px;bottom:calc(100% + 4px);min-width:160px;background:var(--bg2,#262626);border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:20}
+.st-mention-item{display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:6px;cursor:pointer;font-size:12.5px}
+.st-mention-item.on{background:rgba(127,127,127,.2)}
+.st-mention-at{opacity:.6}
+.st-mention-nm{font-weight:600;color:var(--fg,#ddd)}
 .st-in textarea{flex:1;resize:none;background:rgba(127,127,127,.1);color:inherit;border:1px solid rgba(127,127,127,.25);border-radius:7px;padding:7px 9px;font:inherit;min-height:20px;max-height:120px}
 .st-in button{background:#2d6cdf;color:#fff;border:0;border-radius:7px;padding:0 14px;cursor:pointer;font:inherit;font-weight:600}
 .st-cut{font-weight:400;opacity:.7;font-size:9px;font-style:italic} /* 참견으로 중단된 부분응답 표식 */
@@ -126,7 +131,7 @@ export default {
       (app.settings?.get("permissionPolicy") as string) || undefined;
     const settingMode = (): KibitzMode => {
       const v = app.settings?.get("kibitzDefault") as string;
-      return v === "facil" || v === "simul" ? v : "turn";
+      return v === "turn" || v === "simul" ? v : "facil"; // 기본 = 진행(주력)
     };
     const settingDepthCap = (): number =>
       Math.max(1, Number(app.settings?.get("nameTriggerDepthCap")) || 4);
@@ -328,11 +333,13 @@ export default {
       const msgs = el("div", "st-msgs");
       const inrow = el("div", "st-in");
       const ta = document.createElement("textarea");
-      ta.placeholder = "메시지… (Enter 전송, Shift+Enter 줄바꿈) — 언제나 참견 가능";
+      ta.placeholder = "메시지… (Enter 전송, Shift+Enter 줄바꿈, @로 모델 지목) — 언제나 참견 가능";
       ta.rows = 1;
       const send = document.createElement("button");
       send.textContent = "전송";
-      inrow.append(ta, send);
+      const mentionPop = el("div", "st-mention"); // @자동완성 팝업(체크된 참가 모델)
+      mentionPop.style.display = "none";
+      inrow.append(mentionPop, ta, send);
 
       const st: StudioState = {
         roster: ACTIVE_AGENTS.map((a) => ({ id: a.id, checked: true })),
@@ -361,10 +368,85 @@ export default {
         const t = ta.value.trim();
         if (!t) return;
         ta.value = "";
+        hideMention();
         onHuman(st, t);
       };
+
+      // @자동완성 — 커서 앞 '@부분단어'를 잡아 체크된 참가 모델 후보를 팝업. ↑↓ 이동, Enter/Tab/클릭 확정, Esc 닫기.
+      let menTokens: { label: string; id: string }[] = [];
+      let menActive = -1;
+      let menStart = -1; // '@' 위치(교체 시작점)
+      const hideMention = () => {
+        mentionPop.style.display = "none";
+        menActive = -1;
+        menStart = -1;
+      };
+      const renderMention = () => {
+        mentionPop.replaceChildren();
+        menTokens.forEach((t, i) => {
+          const row = el("div", "st-mention-item" + (i === menActive ? " on" : ""));
+          row.style.color = COLOR[t.id] ?? "var(--fg,#ddd)";
+          row.append(elText("span", "@", "st-mention-at"), elText("span", t.label, "st-mention-nm"));
+          row.addEventListener("pointerdown", (e) => {
+            e.preventDefault(); // textarea blur 방지
+            pickMention(i);
+          });
+          mentionPop.appendChild(row);
+        });
+      };
+      const pickMention = (i: number) => {
+        const tok = menTokens[i];
+        if (!tok || menStart < 0) return;
+        const before = ta.value.slice(0, menStart);
+        const after = ta.value.slice(ta.selectionStart);
+        const insert = `@${tok.label} `;
+        ta.value = before + insert + after;
+        const caret = before.length + insert.length;
+        ta.setSelectionRange(caret, caret);
+        hideMention();
+        ta.focus();
+      };
+      const updateMention = () => {
+        const caret = ta.selectionStart;
+        const pre = ta.value.slice(0, caret);
+        const m = /@([^\s@]*)$/.exec(pre); // 커서 앞 '@단어'(공백 전까지)
+        if (!m) return hideMention();
+        const q = m[1].toLowerCase();
+        const checked = new Set(participants(st.roster));
+        menTokens = ACTIVE_AGENTS.filter((a) => checked.has(a.id))
+          .map((a) => ({ label: a.label, id: a.id }))
+          .filter((t) => !q || t.label.toLowerCase().startsWith(q) || t.id.startsWith(q));
+        if (!menTokens.length) return hideMention();
+        menStart = caret - m[0].length; // '@' 위치
+        menActive = 0;
+        renderMention();
+        mentionPop.style.display = "block";
+      };
+
       send.addEventListener("click", doSend);
+      ta.addEventListener("input", updateMention);
       ta.addEventListener("keydown", (e) => {
+        const open = mentionPop.style.display !== "none";
+        if (open) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            menActive = (menActive + 1) % menTokens.length;
+            return renderMention();
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            menActive = (menActive - 1 + menTokens.length) % menTokens.length;
+            return renderMention();
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            return pickMention(menActive);
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            return hideMention();
+          }
+        }
         if (e.key === "Enter" && !e.shiftKey && !(e as any).isComposing) {
           e.preventDefault();
           doSend();
@@ -393,7 +475,7 @@ export default {
         b.addEventListener("click", () => setMode(st, m));
         return b;
       };
-      st.kibEl.append(mk("turn", "순차"), mk("facil", "진행"), mk("simul", "동시"));
+      st.kibEl.append(mk("facil", "진행"), mk("turn", "순차"), mk("simul", "동시"));
     }
 
     // 로스터 탭 — 체크박스(참여) + 드래그(순서=턴 순서). 브랜드 색.
@@ -687,12 +769,48 @@ export default {
     // 라이브 구동 — 모드별 한 구동(turn=순차 1라운드 / simul=병렬 1라운드 / facil=진행자 LOOP). turn·simul 뒤엔
     // @멘션 해소(facil 은 진행자가 조율하므로 별도 @해소 안 함). 참견(pendingHuman)이 들어오면 부분응답 종결 직후
     // 사람 입력을 주입하고 재구동. 참견 없으면 종료(사람 입력 대기).
+    // 사람 입력의 @지목 — 트레일링 사람 메시지에서 '@모델'을 모아 체크된 참여자만(중복 제거). 모드 무관 직행 대상.
+    function humanTargets(st: StudioState): string[] {
+      const ids = st.roster.map((r) => r.id);
+      const checked = new Set(participants(st.roster));
+      const targets: string[] = [];
+      for (let i = st.conv.length - 1; i >= 0; i--) {
+        if (st.conv[i].who !== "human") break; // 연속된 트레일링 사람 입력만
+        for (const id of detectMentions(st.conv[i].text, ids, "human", nameOf)) {
+          if (checked.has(id) && !targets.includes(id)) targets.push(id);
+        }
+      }
+      return targets;
+    }
+
+    // 사람이 @지목 → 그 모델들만 병렬 1회(동시). 모드 무관(진행 모드의 진행자도 우회). 스냅샷 고정 = 서로 안 봄.
+    async function driveTargeted(st: StudioState, ids: string[], targets: string[]) {
+      const snapshot = st.conv.slice();
+      await Promise.all(
+        targets.map(async (id) => {
+          setStatus(st, `${nameOf(id)} 응답 중…`);
+          const prompt = buildPrompt({
+            roster: st.roster,
+            conversation: snapshot,
+            speaker: id,
+            nameOf,
+            preamble: inviteePreamble(id, ids, nameOf, st.cwd, "simul"),
+          });
+          const w = await runOneTurn(st, id, prompt);
+          if (w) st.conv.push({ who: id, text: w });
+        }),
+      );
+    }
+
     async function runLoop(st: StudioState) {
       st.running = true;
       const ids = st.roster.map((x) => x.id);
       for (;;) {
         const scanFrom = st.conv.length;
-        if (st.mode === "simul") {
+        const targets = humanTargets(st); // 사람 @지목 — 있으면 모드 무관 직행(병렬)
+        if (targets.length) {
+          await driveTargeted(st, ids, targets);
+        } else if (st.mode === "simul") {
           await driveSimul({
             roster: st.roster,
             conversation: st.conv,
@@ -710,8 +828,9 @@ export default {
           injectPending(st); // 참견 — 부분응답 종결 뒤 사람 입력 주입(순서: 발화 → 사람)
           continue; // 재구동
         }
-        if (st.mode !== "facil") {
-          await resolveMentions(st, scanFrom); // @지목 연쇄(진행 모드는 진행자가 조율)
+        // @지목 직행·진행 모드는 @연쇄 안 함(직행 답 / 진행자 조율). 그 외(순차·동시)만 @멘션 해소.
+        if (!targets.length && st.mode !== "facil") {
+          await resolveMentions(st, scanFrom);
           if (st.pendingHuman.length) {
             injectPending(st);
             continue;

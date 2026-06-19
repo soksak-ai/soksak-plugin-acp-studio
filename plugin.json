@@ -21,11 +21,20 @@
     {
       "key": "kibitzDefault",
       "type": "enum",
-      "enum": ["turn", "free", "simul"],
-      "enumLabels": ["턴제(질서)", "자유 대화", "동시 발화"],
-      "default": "turn",
+      "enum": ["facil", "turn", "simul"],
+      "enumLabels": ["진행(사회자)", "순차", "동시"],
+      "default": "facil",
       "title": "대화 기본 모드",
-      "description": "새 워크스페이스의 대화 스타일 기본값 — 턴제(탭 순서 한 명씩), 자유(라운드 반복), 동시(전원 병렬 발화)"
+      "description": "새 워크스페이스의 대화 스타일 기본값 — 진행(진행자가 동료를 조율·마무리), 순차(탭 순서 각 1회), 동시(전원 병렬 발화)"
+    },
+    {
+      "key": "facilMaxRounds",
+      "type": "number",
+      "default": 6,
+      "min": 1,
+      "max": 20,
+      "title": "진행 모드 라운드 상한",
+      "description": "진행 모드에서 진행자↔동료 라운드의 하드 상한(폭주 방지 — 도달 시 강제 마무리)"
     },
     {
       "key": "nameTriggerDepthCap",
