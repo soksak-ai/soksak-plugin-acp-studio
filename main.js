@@ -166,8 +166,11 @@ function detectMentions(text, roster, speaker, nameOf2) {
 var AGENTS = [
   { id: "claude", label: "Claude", color: "#d97757" },
   { id: "codex", label: "Codex", color: "#10a37f" },
-  { id: "gemini", label: "Gemini", color: "#4285f4" }
+  // gemini: gemini-cli 가 2026-06-18 부터 Pro/Ultra·무료 티어 서비스 종료, antigravity-cli(agy)는 ACP 미구현
+  //   (Issue #31) → Google 계열 ACP 경로 없음. 임시 hidden(부활: hidden 해제 + acp-core 에 agy --acp preset).
+  { id: "gemini", label: "Gemini", color: "#4285f4", hidden: true }
 ];
+var ACTIVE_AGENTS = AGENTS.filter((a) => !a.hidden);
 var NAME = { claude: "Claude", codex: "Codex", gemini: "Gemini" };
 var COLOR = Object.fromEntries(AGENTS.map((a) => [a.id, a.color]));
 var nameOf = (id) => NAME[id] ?? id;
@@ -304,7 +307,7 @@ var main_default = {
           maxRounds: { type: "number", description: "free \uBAA8\uB4DC \uB77C\uC6B4\uB4DC \uC0C1\uD55C(\uAE30\uBCF8 2)" }
         },
         handler: async (p) => {
-          const raw = Array.isArray(p.agents) && p.agents.length ? p.agents : AGENTS.map((a) => a.id);
+          const raw = Array.isArray(p.agents) && p.agents.length ? p.agents : ACTIVE_AGENTS.map((a) => a.id);
           const specs = raw.map(
             (a) => typeof a === "string" ? { id: a, agent: a, cmd: void 0, args: void 0 } : { id: String(a.id), agent: void 0, cmd: a.cmd, args: a.args }
           );
@@ -400,7 +403,7 @@ var main_default = {
       send.textContent = "\uC804\uC1A1";
       inrow.append(ta, send);
       const st = {
-        roster: AGENTS.map((a) => ({ id: a.id, checked: true })),
+        roster: ACTIVE_AGENTS.map((a) => ({ id: a.id, checked: true })),
         mode: settingMode(),
         conv: [],
         conns: /* @__PURE__ */ new Map(),

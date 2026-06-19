@@ -22,11 +22,15 @@ import {
   type Utterance,
 } from "./conversation";
 
-const AGENTS: { id: string; label: string; color: string }[] = [
+const AGENTS: { id: string; label: string; color: string; hidden?: boolean }[] = [
   { id: "claude", label: "Claude", color: "#d97757" },
   { id: "codex", label: "Codex", color: "#10a37f" },
-  { id: "gemini", label: "Gemini", color: "#4285f4" },
+  // gemini: gemini-cli 가 2026-06-18 부터 Pro/Ultra·무료 티어 서비스 종료, antigravity-cli(agy)는 ACP 미구현
+  //   (Issue #31) → Google 계열 ACP 경로 없음. 임시 hidden(부활: hidden 해제 + acp-core 에 agy --acp preset).
+  { id: "gemini", label: "Gemini", color: "#4285f4", hidden: true },
 ];
+// 로스터·기본 참여자에 쓰는 활성 목록(hidden 제외). NAME/COLOR/nameOf 는 전체 유지 — 과거 대화의 Gemini 렌더 안전.
+const ACTIVE_AGENTS = AGENTS.filter((a) => !a.hidden);
 const NAME: Record<string, string> = { claude: "Claude", codex: "Codex", gemini: "Gemini" };
 const COLOR: Record<string, string> = Object.fromEntries(AGENTS.map((a) => [a.id, a.color]));
 const nameOf = (id: string): string => NAME[id] ?? id;
@@ -219,7 +223,7 @@ export default {
         },
         handler: async (p: any) => {
           const raw: any[] =
-            Array.isArray(p.agents) && p.agents.length ? p.agents : AGENTS.map((a) => a.id);
+            Array.isArray(p.agents) && p.agents.length ? p.agents : ACTIVE_AGENTS.map((a) => a.id);
           // 각 항목: preset id 문자열 또는 {id,cmd,args}(E2E 런치). UI 는 preset 만 — cmd/args 는 헤드리스 전용.
           const specs = raw.map((a) =>
             typeof a === "string"
@@ -324,7 +328,7 @@ export default {
       inrow.append(ta, send);
 
       const st: StudioState = {
-        roster: AGENTS.map((a) => ({ id: a.id, checked: true })),
+        roster: ACTIVE_AGENTS.map((a) => ({ id: a.id, checked: true })),
         mode: settingMode(),
         conv: [],
         conns: new Map(),
