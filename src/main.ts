@@ -38,7 +38,7 @@ const CHANNEL_EMOJI: Record<string, string> = { 회고: "🪞", 잡담: "💬" }
 const FREE_ROUNDS = 2; // free(자유) 모드 라운드 안전판(폭주 방지) — P5 설정화.
 
 const CSS = `
-.st{display:flex;flex-direction:column;height:100%;width:100%;background:var(--bg,#1e1e1e);color:var(--fg,#ddd);font:13px system-ui,-apple-system,sans-serif;overflow:hidden}
+.st{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg,#1e1e1e);color:var(--fg,#ddd);font:13px system-ui,-apple-system,sans-serif;overflow:hidden}
 .st-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid rgba(127,127,127,.2);flex:0 0 auto;flex-wrap:wrap}
 .st-bar b{font-weight:700;letter-spacing:.02em}
 .st-tabs{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
@@ -62,6 +62,7 @@ const CSS = `
 .st-tool{align-self:flex-start;max-width:88%;border:1px solid rgba(127,127,127,.25);border-radius:8px;padding:6px 9px;font-size:12px;background:rgba(127,127,127,.06)}
 .st-pending{align-self:flex-start;font-size:11px;color:var(--fg3,#888);display:flex;align-items:center;gap:6px}
 .st-dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:st-pulse 1.1s ease-in-out infinite}
+.st-fail{align-self:flex-start;max-width:88%;font-size:11.5px;color:var(--danger-soft,#d77);border:1px solid var(--danger-soft,#d77);border-radius:8px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;opacity:.85}
 @keyframes st-pulse{0%,100%{opacity:.25}50%{opacity:1}}
 .st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto}
 .st-in textarea{flex:1;resize:none;background:rgba(127,127,127,.1);color:inherit;border:1px solid rgba(127,127,127,.25);border-radius:7px;padding:7px 9px;font:inherit;min-height:20px;max-height:120px}
@@ -80,11 +81,18 @@ const CSS = `
 .club2-body{white-space:pre-wrap;word-break:break-word;line-height:1.45}
 `;
 
+interface TurnRow {
+  toBubble(): HTMLElement;
+  fail(reason: string): void;
+  remove(): void;
+}
 interface Current {
   agentId: string;
   connId: number;
   sessionId: string;
-  bubble: HTMLElement;
+  row: TurnRow;
+  // 버블은 lazy — 첫 스트리밍 청크(또는 최종 텍스트)에 생성. 그 전엔 row 의 "응답 중…" 인디케이터 유지.
+  bubble: HTMLElement | null;
   liveRaw: string;
   demux: ReturnType<typeof createTagDemux>;
 }
@@ -208,6 +216,25 @@ export default {
         onPost: ctx.onPost,
       });
     }
+
+    // 활성(마지막 마운트) Studio 뷰 — send 명령이 라이브 대화를 프로그램적으로 구동(노출 command E2E).
+    let activeStudio: StudioState | null = null;
+
+    // ── send(라이브 Studio 에 사람 메시지 주입 — 노출 command 로만 E2E·자동화 구동) ──
+    ctx.subscriptions.push(
+      app.commands.register("send", {
+        description:
+          "활성 Studio 뷰에 사람 메시지를 보낸다(textarea 전송과 동일 — 턴 루프 시작/참견). 노출 command 자동화·E2E 용",
+        params: { text: { type: "string", required: true, description: "보낼 메시지" } },
+        handler: async (p: any) => {
+          const text = String(p?.text ?? "").trim();
+          if (!text) return { ok: false, error: "text 필수" };
+          if (!activeStudio) return { ok: false, error: "활성 Studio 뷰 없음(뷰를 먼저 여세요)" };
+          onHuman(activeStudio, text);
+          return { ok: true, sent: text, running: activeStudio.running };
+        },
+      }),
+    );
 
     // ── 헤드리스 ask(단일 에이전트 1회 — E2E·CLI) ──
     ctx.subscriptions.push(
@@ -337,6 +364,9 @@ export default {
       app.ui.registerView("studio", {
         mount(container: HTMLElement) {
           teardown(container);
+          // 호스트 슬롯에 확정 높이 부여(kanban 패턴) — .st 가 absolute inset:0 로 채워 flex 레이아웃이
+          // 풀린다(컨테이너 height 미정 시 .st{height:100%} 가 0/콘텐츠로 붕괴 → 입력바 클리핑 방지).
+          container.style.position = "relative";
           const style = document.createElement("style");
           style.textContent = CSS;
           const root = document.createElement("div");
@@ -395,13 +425,13 @@ export default {
 
           for (const p of await loadFeed(projectCwd())) renderPost(p);
           const off = app.bus?.on("clubhouse.post", (p: ClubPost) => renderPost(p));
-          (container as unknown as { __off?: () => void }).__off = off;
+          (container as unknown as { __off?: { dispose(): void } }).__off = off;
         },
         unmount(container: HTMLElement) {
-          const off = (container as unknown as { __off?: () => void }).__off;
+          const off = (container as unknown as { __off?: { dispose(): void } }).__off;
           if (off) {
             try {
-              off();
+              off.dispose(); // Disposable{dispose} — 함수 호출이 아니라 dispose() (clubhouse.post 구독 해제)
             } catch {
               /* noop */
             }
@@ -447,6 +477,7 @@ export default {
     function teardown(container: HTMLElement) {
       const st = states.get(container);
       if (st) {
+        if (st === activeStudio) activeStudio = null; // send 명령 dangling 참조 방지
         if (st.current) engine.cancel(st.current.connId, st.current.sessionId);
         for (const connId of st.conns.values()) core("disconnect", { connId }).catch(() => {});
         st.conns.clear();
@@ -481,6 +512,7 @@ export default {
         status,
       };
       states.set(container, st);
+      activeStudio = st; // 라이브 send 명령의 타겟(마지막 마운트 = 활성)
 
       const kib = kibitzToggle(st.mode, (m) => {
         st.mode = m;
@@ -493,7 +525,7 @@ export default {
         const t = ta.value.trim();
         if (!t) return;
         ta.value = "";
-        onHuman(st, tabsEl, t);
+        onHuman(st, t);
       };
       send.addEventListener("click", doSend);
       ta.addEventListener("keydown", (e) => {
@@ -565,7 +597,7 @@ export default {
     }
 
     // 사람 발화 — 언제나 최우선. 진행 중이면 현재 턴 cancel(참견 → 재시작), 멈춰 있으면 새 교환 시작.
-    function onHuman(st: StudioState, tabsEl: HTMLElement, text: string) {
+    function onHuman(st: StudioState, text: string) {
       st.conv.push({ who: "human", text });
       renderUser(st, text);
       if (st.running && st.current) {
@@ -577,14 +609,17 @@ export default {
       }
     }
 
-    // 영속 연결 보장(에이전트별 1프로세스 재사용) — 실패 시 null.
-    async function ensureConn(st: StudioState, agentId: string): Promise<number | null> {
+    // 영속 연결 보장(에이전트별 1프로세스 재사용) — 실패 시 사유 반환(조용한 null 금지: 화면에 띄운다).
+    async function ensureConn(
+      st: StudioState,
+      agentId: string,
+    ): Promise<{ connId: number } | { error: string }> {
       const existing = st.conns.get(agentId);
-      if (existing != null) return existing;
+      if (existing != null) return { connId: existing };
       const c = await core("connect", { agent: agentId, cwd: st.cwd, permission: settingPolicy() });
-      if (!c.ok) return null;
+      if (!c.ok) return { error: String(c.error || c.message || "연결 실패") };
       st.conns.set(agentId, c.connId);
-      return c.connId;
+      return { connId: c.connId };
     }
 
     // 라이브 교환 루프 — 시퀀싱(턴 순서·참견 재시작)은 검증된 driveExchange. 여기 turn() 은 연결·세션·스트리밍·버블만.
@@ -604,20 +639,34 @@ export default {
         },
         onTurnStart: (speaker) => setStatus(st, `${nameOf(speaker)} 응답 중…`),
         turn: async (speaker, prompt) => {
-          const connId = await ensureConn(st, speaker);
-          if (connId == null) return ""; // 연결 실패 → 빈 발화(건너뜀, 대화 지속)
+          // 턴 행 — 시작 즉시 "응답 중…" 맥동 인디케이터(B3-c2). 성공=버블, 실패=사유 표시(B2: 조용한 skip 금지).
+          const row = renderTurnRow(st, speaker);
+          // 실패 = 화면(row.fail) + 세션 보존(st.conv). 에러도 대화에 킵 → 다른 에이전트가 맥락으로 알고
+          // 기록에 남는다(예: Codex 연결 실패를 Claude 가 보고 "다들 대기 중"이라 오인하지 않게).
+          const failTurn = (reason: string) => {
+            row.fail(reason);
+            st.conv.push({ who: "system", text: `${nameOf(speaker)} ${reason}` });
+          };
+          const conn = await ensureConn(st, speaker);
+          if ("error" in conn) {
+            failTurn(`연결 실패: ${conn.error}`); // codex ENOENT 등 사유를 그대로 노출
+            return "";
+          }
+          const connId = conn.connId;
           let sessionId: string;
           try {
             sessionId = await engine.newSession(connId, st.cwd);
-          } catch {
+          } catch (e) {
+            failTurn(`세션 실패: ${String(e)}`);
             return "";
           }
-          const bubble = renderAssistant(st, speaker, "");
+          // 버블은 아직 안 만든다 — "응답 중…" 인디케이터를 첫 스트리밍 청크(또는 최종 텍스트)까지 유지.
           const cur: Current = {
             agentId: speaker,
             connId,
             sessionId,
-            bubble,
+            row,
+            bubble: null,
             liveRaw: "",
             demux: createTagDemux(),
           };
@@ -627,27 +676,30 @@ export default {
           let r: any;
           try {
             r = await core("prompt", { connId, sessionId, text: prompt });
-          } catch {
-            r = { ok: false };
+          } catch (e) {
+            r = { ok: false, error: String(e) };
           }
-          off();
+          off.dispose(); // app.bus.on 은 Disposable{dispose} 반환 — 함수 호출(off()) 은 throw → 구독 누수·누적
           st.current = null;
           if (st.interjected) {
-            bubble.closest(".st-row")?.remove(); // 참견 — 버블 폐기(driveExchange 가 같은 화자 재시작)
+            row.remove(); // 참견 — 행 폐기(driveExchange 가 같은 화자 재시작)
             return "";
           }
           // 권위본 — 코어 dedup r.text 를 demux(태그 밖=작업, 안=사교). 버블은 작업 텍스트로 확정(태그 0).
           const { work, club } = demux(r.ok ? (r.text ?? "") : "");
-          if (work) bubble.textContent = work;
-          else bubble.closest(".st-row")?.remove();
+          if (work) {
+            (cur.bubble ?? (cur.bubble = row.toBubble())).textContent = work; // 인디케이터→버블(없었으면 생성)
+          } else {
+            failTurn(r.ok ? "응답 없음(빈 발화)" : `프롬프트 실패: ${String(r.error ?? "")}`);
+          }
           // 사교 — 호명 연쇄(소환된 동료는 ensureConn 으로 깨움) + 피드 버스 emit + 영속.
           if (club.length) {
             const rosterIds = st.roster.map((x) => x.id);
             const liveAsk = async (id: string, pr: string): Promise<string> => {
-              const cid = await ensureConn(st, id);
-              if (cid == null) throw new Error("연결 실패");
-              const sid = await engine.newSession(cid, st.cwd);
-              return (await engine.ask(cid, sid, pr)).text;
+              const conn = await ensureConn(st, id);
+              if ("error" in conn) throw new Error(conn.error);
+              const sid = await engine.newSession(conn.connId, st.cwd);
+              return (await engine.ask(conn.connId, sid, pr)).text;
             };
             const posts = await runRelay(speaker, club, {
               rosterIds,
@@ -675,7 +727,11 @@ export default {
       if (t !== "" && t === cur.liveRaw) return;
       cur.liveRaw += t;
       const workChunk = cur.demux.push(t);
-      if (workChunk) cur.bubble.textContent = (cur.bubble.textContent || "") + workChunk;
+      if (workChunk) {
+        // 첫 실작업 청크에서 "응답 중…" 인디케이터 → 버블 생성(그 전까진 인디케이터 유지).
+        if (!cur.bubble) cur.bubble = cur.row.toBubble();
+        cur.bubble.textContent = (cur.bubble.textContent || "") + workChunk;
+      }
     }
 
     // ── 렌더 헬퍼 ──
@@ -685,15 +741,39 @@ export default {
       st.msgs.appendChild(row);
       scroll(st);
     }
-    function renderAssistant(st: StudioState, agentId: string, text: string): HTMLElement {
+    // 턴 행 — 이름 + 본문(처음엔 "응답 중…" 맥동 인디케이터). toBubble()=빈 버블로 교체(스트리밍),
+    // fail(reason)=사유 노출(연결/세션/빈응답 실패를 조용히 숨기지 않음), remove()=행 폐기(참견 재시작).
+    function renderTurnRow(st: StudioState, agentId: string) {
       const row = el("div", "st-row assistant");
       const who = elText("div", nameOf(agentId), "st-who");
       who.style.color = COLOR[agentId] ?? "var(--fg3,#888)";
-      const b = bubble(text);
-      row.append(who, b);
+      const pending = el("div", "st-pending");
+      pending.append(el("span", "st-dot"), document.createTextNode("응답 중…"));
+      row.append(who, pending);
       st.msgs.appendChild(row);
       scroll(st);
-      return b;
+      let body: HTMLElement = pending;
+      const swap = (next: HTMLElement) => {
+        body.replaceWith(next);
+        body = next;
+        scroll(st);
+      };
+      return {
+        toBubble(): HTMLElement {
+          const b = bubble("");
+          swap(b);
+          return b;
+        },
+        fail(reason: string) {
+          const f = el("div", "st-fail");
+          f.textContent = `⚠ ${reason}`;
+          f.title = reason; // 전문은 hover 로(여러 줄 stderr 보존)
+          swap(f);
+        },
+        remove() {
+          row.remove();
+        },
+      };
     }
     function scroll(st: StudioState) {
       st.msgs.scrollTop = st.msgs.scrollHeight;

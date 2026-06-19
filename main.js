@@ -265,7 +265,7 @@ var nameOf = (id) => NAME[id] ?? id;
 var CHANNEL_EMOJI = { \uD68C\uACE0: "\u{1FA9E}", \uC7A1\uB2F4: "\u{1F4AC}" };
 var FREE_ROUNDS = 2;
 var CSS = `
-.st{display:flex;flex-direction:column;height:100%;width:100%;background:var(--bg,#1e1e1e);color:var(--fg,#ddd);font:13px system-ui,-apple-system,sans-serif;overflow:hidden}
+.st{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg,#1e1e1e);color:var(--fg,#ddd);font:13px system-ui,-apple-system,sans-serif;overflow:hidden}
 .st-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid rgba(127,127,127,.2);flex:0 0 auto;flex-wrap:wrap}
 .st-bar b{font-weight:700;letter-spacing:.02em}
 .st-tabs{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
@@ -289,6 +289,7 @@ var CSS = `
 .st-tool{align-self:flex-start;max-width:88%;border:1px solid rgba(127,127,127,.25);border-radius:8px;padding:6px 9px;font-size:12px;background:rgba(127,127,127,.06)}
 .st-pending{align-self:flex-start;font-size:11px;color:var(--fg3,#888);display:flex;align-items:center;gap:6px}
 .st-dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:st-pulse 1.1s ease-in-out infinite}
+.st-fail{align-self:flex-start;max-width:88%;font-size:11.5px;color:var(--danger-soft,#d77);border:1px solid var(--danger-soft,#d77);border-radius:8px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;opacity:.85}
 @keyframes st-pulse{0%,100%{opacity:.25}50%{opacity:1}}
 .st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto}
 .st-in textarea{flex:1;resize:none;background:rgba(127,127,127,.1);color:inherit;border:1px solid rgba(127,127,127,.25);border-radius:7px;padding:7px 9px;font:inherit;min-height:20px;max-height:120px}
@@ -387,6 +388,20 @@ var main_default = {
         onPost: ctx2.onPost
       });
     }
+    let activeStudio = null;
+    ctx.subscriptions.push(
+      app.commands.register("send", {
+        description: "\uD65C\uC131 Studio \uBDF0\uC5D0 \uC0AC\uB78C \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B8\uB2E4(textarea \uC804\uC1A1\uACFC \uB3D9\uC77C \u2014 \uD134 \uB8E8\uD504 \uC2DC\uC791/\uCC38\uACAC). \uB178\uCD9C command \uC790\uB3D9\uD654\xB7E2E \uC6A9",
+        params: { text: { type: "string", required: true, description: "\uBCF4\uB0BC \uBA54\uC2DC\uC9C0" } },
+        handler: async (p) => {
+          const text = String(p?.text ?? "").trim();
+          if (!text) return { ok: false, error: "text \uD544\uC218" };
+          if (!activeStudio) return { ok: false, error: "\uD65C\uC131 Studio \uBDF0 \uC5C6\uC74C(\uBDF0\uB97C \uBA3C\uC800 \uC5EC\uC138\uC694)" };
+          onHuman(activeStudio, text);
+          return { ok: true, sent: text, running: activeStudio.running };
+        }
+      })
+    );
     ctx.subscriptions.push(
       app.commands.register("ask", {
         description: "\uD504\uB86C\uD504\uD2B8 1\uD68C \u2014 \uB2E8\uC77C \uC5D0\uC774\uC804\uD2B8 connect+session+prompt \uD6C4 \uD14D\uC2A4\uD2B8\xB7\uD234\uCF5C \uBC18\uD658(\uD5E4\uB4DC\uB9AC\uC2A4)",
@@ -499,6 +514,7 @@ var main_default = {
       app.ui.registerView("studio", {
         mount(container) {
           teardown(container);
+          container.style.position = "relative";
           const style = document.createElement("style");
           style.textContent = CSS;
           const root = document.createElement("div");
@@ -558,7 +574,7 @@ var main_default = {
           const off = container.__off;
           if (off) {
             try {
-              off();
+              off.dispose();
             } catch {
             }
           }
@@ -598,6 +614,7 @@ var main_default = {
     function teardown(container) {
       const st = states.get(container);
       if (st) {
+        if (st === activeStudio) activeStudio = null;
         if (st.current) engine.cancel(st.current.connId, st.current.sessionId);
         for (const connId of st.conns.values()) core("disconnect", { connId }).catch(() => {
         });
@@ -631,6 +648,7 @@ var main_default = {
         status
       };
       states.set(container, st);
+      activeStudio = st;
       const kib = kibitzToggle(st.mode, (m) => {
         st.mode = m;
       });
@@ -641,7 +659,7 @@ var main_default = {
         const t = ta.value.trim();
         if (!t) return;
         ta.value = "";
-        onHuman(st, tabsEl, t);
+        onHuman(st, t);
       };
       send.addEventListener("click", doSend);
       ta.addEventListener("keydown", (e) => {
@@ -705,7 +723,7 @@ var main_default = {
     function setStatus(st, t) {
       st.status.textContent = t;
     }
-    function onHuman(st, tabsEl, text) {
+    function onHuman(st, text) {
       st.conv.push({ who: "human", text });
       renderUser(st, text);
       if (st.running && st.current) {
@@ -718,11 +736,11 @@ var main_default = {
     }
     async function ensureConn(st, agentId) {
       const existing = st.conns.get(agentId);
-      if (existing != null) return existing;
+      if (existing != null) return { connId: existing };
       const c = await core("connect", { agent: agentId, cwd: st.cwd, permission: settingPolicy() });
-      if (!c.ok) return null;
+      if (!c.ok) return { error: String(c.error || c.message || "\uC5F0\uACB0 \uC2E4\uD328") };
       st.conns.set(agentId, c.connId);
-      return c.connId;
+      return { connId: c.connId };
     }
     async function runLoop(st) {
       st.running = true;
@@ -741,20 +759,30 @@ var main_default = {
         },
         onTurnStart: (speaker) => setStatus(st, `${nameOf(speaker)} \uC751\uB2F5 \uC911\u2026`),
         turn: async (speaker, prompt) => {
-          const connId = await ensureConn(st, speaker);
-          if (connId == null) return "";
+          const row = renderTurnRow(st, speaker);
+          const failTurn = (reason) => {
+            row.fail(reason);
+            st.conv.push({ who: "system", text: `${nameOf(speaker)} ${reason}` });
+          };
+          const conn = await ensureConn(st, speaker);
+          if ("error" in conn) {
+            failTurn(`\uC5F0\uACB0 \uC2E4\uD328: ${conn.error}`);
+            return "";
+          }
+          const connId = conn.connId;
           let sessionId;
           try {
             sessionId = await engine.newSession(connId, st.cwd);
-          } catch {
+          } catch (e) {
+            failTurn(`\uC138\uC158 \uC2E4\uD328: ${String(e)}`);
             return "";
           }
-          const bubble2 = renderAssistant(st, speaker, "");
           const cur = {
             agentId: speaker,
             connId,
             sessionId,
-            bubble: bubble2,
+            row,
+            bubble: null,
             liveRaw: "",
             demux: createTagDemux()
           };
@@ -764,25 +792,28 @@ var main_default = {
           let r;
           try {
             r = await core("prompt", { connId, sessionId, text: prompt });
-          } catch {
-            r = { ok: false };
+          } catch (e) {
+            r = { ok: false, error: String(e) };
           }
-          off();
+          off.dispose();
           st.current = null;
           if (st.interjected) {
-            bubble2.closest(".st-row")?.remove();
+            row.remove();
             return "";
           }
           const { work, club } = demux(r.ok ? r.text ?? "" : "");
-          if (work) bubble2.textContent = work;
-          else bubble2.closest(".st-row")?.remove();
+          if (work) {
+            (cur.bubble ?? (cur.bubble = row.toBubble())).textContent = work;
+          } else {
+            failTurn(r.ok ? "\uC751\uB2F5 \uC5C6\uC74C(\uBE48 \uBC1C\uD654)" : `\uD504\uB86C\uD504\uD2B8 \uC2E4\uD328: ${String(r.error ?? "")}`);
+          }
           if (club.length) {
             const rosterIds = st.roster.map((x) => x.id);
             const liveAsk = async (id, pr) => {
-              const cid = await ensureConn(st, id);
-              if (cid == null) throw new Error("\uC5F0\uACB0 \uC2E4\uD328");
-              const sid = await engine.newSession(cid, st.cwd);
-              return (await engine.ask(cid, sid, pr)).text;
+              const conn2 = await ensureConn(st, id);
+              if ("error" in conn2) throw new Error(conn2.error);
+              const sid = await engine.newSession(conn2.connId, st.cwd);
+              return (await engine.ask(conn2.connId, sid, pr)).text;
             };
             const posts = await runRelay(speaker, club, {
               rosterIds,
@@ -807,7 +838,10 @@ var main_default = {
       if (t !== "" && t === cur.liveRaw) return;
       cur.liveRaw += t;
       const workChunk = cur.demux.push(t);
-      if (workChunk) cur.bubble.textContent = (cur.bubble.textContent || "") + workChunk;
+      if (workChunk) {
+        if (!cur.bubble) cur.bubble = cur.row.toBubble();
+        cur.bubble.textContent = (cur.bubble.textContent || "") + workChunk;
+      }
     }
     function renderUser(st, text) {
       const row = el("div", "st-row user");
@@ -815,15 +849,37 @@ var main_default = {
       st.msgs.appendChild(row);
       scroll(st);
     }
-    function renderAssistant(st, agentId, text) {
+    function renderTurnRow(st, agentId) {
       const row = el("div", "st-row assistant");
       const who = elText("div", nameOf(agentId), "st-who");
       who.style.color = COLOR[agentId] ?? "var(--fg3,#888)";
-      const b = bubble(text);
-      row.append(who, b);
+      const pending = el("div", "st-pending");
+      pending.append(el("span", "st-dot"), document.createTextNode("\uC751\uB2F5 \uC911\u2026"));
+      row.append(who, pending);
       st.msgs.appendChild(row);
       scroll(st);
-      return b;
+      let body = pending;
+      const swap = (next) => {
+        body.replaceWith(next);
+        body = next;
+        scroll(st);
+      };
+      return {
+        toBubble() {
+          const b = bubble("");
+          swap(b);
+          return b;
+        },
+        fail(reason) {
+          const f = el("div", "st-fail");
+          f.textContent = `\u26A0 ${reason}`;
+          f.title = reason;
+          swap(f);
+        },
+        remove() {
+          row.remove();
+        }
+      };
     }
     function scroll(st) {
       st.msgs.scrollTop = st.msgs.scrollHeight;

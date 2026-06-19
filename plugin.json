@@ -63,6 +63,7 @@
       }
     ],
     "commands": [
+      { "name": "send", "title": "활성 Studio 에 사람 메시지 전송(라이브 구동·자동화)" },
       { "name": "ask", "title": "프롬프트 1회(단일 에이전트, 헤드리스)" },
       { "name": "converse", "title": "다중 에이전트 1교환(턴테이킹, 헤드리스 E2E)" },
       { "name": "clubhouse.feed", "title": "Clubhouse 피드 읽기" },
