@@ -335,8 +335,10 @@ export default {
       const ta = document.createElement("textarea");
       ta.placeholder = "메시지… (Enter 전송, Shift+Enter 줄바꿈, @로 모델 지목) — 언제나 참견 가능";
       ta.rows = 1;
+      ta.dataset.node = "input"; // contributes.nodes — 외부 주소(ui.input) 노출
       const send = document.createElement("button");
       send.textContent = "전송";
+      send.dataset.node = "send";
       const mentionPop = el("div", "st-mention"); // @자동완성 팝업(체크된 참가 모델)
       mentionPop.style.display = "none";
       inrow.append(mentionPop, ta, send);
@@ -486,6 +488,7 @@ export default {
         const chip = el("div", "st-tab" + (entry.checked ? "" : " off"));
         chip.style.color = a?.color ?? "#888";
         chip.dataset.id = entry.id; // pointer reorder 의 드롭 타겟 식별
+        chip.dataset.node = `tab/${entry.id}`; // contributes.nodes — 에이전트 탭 외부 노출(주소 tab/<agentId>)
         const chk = el("span", "chk");
         chk.textContent = entry.checked ? "✓" : "";
         const nm = elText("span", a?.label ?? entry.id, "nm");
