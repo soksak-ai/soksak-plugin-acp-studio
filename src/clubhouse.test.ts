@@ -157,12 +157,18 @@ describe("relaySummons — 호명 연쇄(물고 물리는 emergence, 강제 0)",
 });
 
 describe("프롬프트 빌더", () => {
-  it("inviteePreamble — 동료·태그 안내·호명 예시·강제 아님", () => {
-    const p = inviteePreamble("claude", ["claude", "codex"], nameOf);
+  it("inviteePreamble — 방 페르소나(협업)·동료·cwd·메타금지·태그·호명", () => {
+    const p = inviteePreamble("claude", ["claude", "codex"], nameOf, "/repo");
+    // 방 정체성 + 협업 규범(이게 핵심 — 솔로 세션처럼 굴지 않게).
+    expect(p).toContain("Studio");
+    expect(p).toContain("협업");
+    expect(p).toContain("/repo"); // cwd 주입
+    expect(p).toContain("내부 절차"); // 메타 서술 금지 지시
+    // 동료·사교 태그·선택(강제 아님) 유지.
     expect(p).toContain("Codex");
     expect(p).toContain("<회고>");
     expect(p).toContain("<잡담>");
-    expect(p).toContain("강제");
+    expect(p).toContain("선택");
   });
   it("buildSummonPrompt — 작업·클럽하우스 맥락 주입", () => {
     const p = buildSummonPrompt({

@@ -331,7 +331,7 @@ export default {
               conversation,
               maxRounds: typeof p.maxRounds === "number" ? p.maxRounds : FREE_ROUNDS,
               nameOf,
-              preamble: (s) => inviteePreamble(s, rosterIds, nameOf),
+              preamble: (s) => inviteePreamble(s, rosterIds, nameOf, cwd),
               turn: async (id, prompt) => {
                 const raw = await askAgent(id, prompt); // 미연결이면 throw → driveExchange 가 이 발화 skip
                 const { work, club: segs } = demux(raw); // 태그 밖=작업(Studio), 안=사교(Clubhouse)
@@ -631,7 +631,7 @@ export default {
         conversation: st.conv, // 공유 — 에이전트 발화는 driveExchange 가 push
         maxRounds: FREE_ROUNDS,
         nameOf,
-        preamble: (s) => inviteePreamble(s, st.roster.map((x) => x.id), nameOf),
+        preamble: (s) => inviteePreamble(s, st.roster.map((x) => x.id), nameOf, st.cwd),
         consumeInterject: () => {
           const v = st.interjected;
           st.interjected = false;
