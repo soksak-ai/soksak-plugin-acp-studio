@@ -156,11 +156,12 @@ export default {
     ctx.subscriptions.push(
       app.commands.register("send", {
         description:
-          "활성 Studio 뷰에 사람 메시지를 보낸다(textarea 전송과 동일 — 대화 구동/참견). 노출 command 자동화·E2E 용",
+          "Inject a human message into the active Studio view, equivalent to typing and submitting via the textarea. Use to drive or interject a multi-agent conversation programmatically (E2E, automation, AI control).",
+        triggers: { ko: "스튜디오 메시지 전송 대화 주입 참견" },
         params: {
-          text: { type: "string", required: true, description: "보낼 메시지" },
-          mode: { type: "string", description: "turn|facil|simul — 전송 전 모드 설정(E2E·자동화). 생략 시 유지" },
-          cut: { type: "boolean", description: "true=참견 시 ask/wait 무시하고 즉시 끊기(E2E 결정론)" },
+          text: { type: "string", required: true, description: "Message text to send." },
+          mode: { type: "string", description: "turn|facil|simul — set conversation mode before sending. Omit to keep current mode." },
+          cut: { type: "boolean", description: "true = immediately interrupt the current agent turn without the ask/wait dialog (deterministic for E2E)." },
         },
         handler: async (p: any) => {
           const text = String(p?.text ?? "").trim();
@@ -179,7 +180,8 @@ export default {
     ctx.subscriptions.push(
       app.commands.register("state", {
         description:
-          "활성 Studio 의 라이브 상태(모드·진행 여부·대화 수·로스터 체크·진행 중 발화의 message 스트리밍 길이)",
+          "Return the live state of the active Studio view: conversation mode, running flag, utterance count, roster check states, and streaming length of in-progress agent turns. Use to observe the studio from E2E tests or AI automation.",
+        triggers: { ko: "스튜디오 상태 대화 진행 확인 모드 로스터" },
         params: {},
         handler: async () => {
           const st = activeStudio;
@@ -202,10 +204,12 @@ export default {
     // ── 헤드리스 ask(단일 에이전트 1회 — E2E·CLI) ──
     ctx.subscriptions.push(
       app.commands.register("ask", {
-        description: "프롬프트 1회 — 단일 에이전트 connect+session+prompt 후 텍스트·툴콜 반환(헤드리스)",
+        description:
+          "Send a single prompt to one ACP agent (connect → new session → prompt) and return the response text and tool calls. Use for headless single-turn queries without opening the Studio UI.",
+        triggers: { ko: "에이전트 단일 질문 프롬프트 헤드리스 단발" },
         params: {
-          agent: { type: "string", description: "preset(claude|codex|gemini, 기본 claude)" },
-          text: { type: "string", required: true, description: "프롬프트" },
+          agent: { type: "string", description: "Agent preset id: claude | codex | gemini (default: claude)." },
+          text: { type: "string", required: true, description: "Prompt text to send to the agent." },
         },
         handler: async (p: any) => {
           const agent = p.agent || "claude";
@@ -236,15 +240,16 @@ export default {
     ctx.subscriptions.push(
       app.commands.register("converse", {
         description:
-          "다중 에이전트 1교환 — agents(탭 순서)가 각 1회 턴테이킹, cwd 에 실파일. 발화·쓴 파일 반환(헤드리스 E2E)",
+          "Run a single round of multi-agent turn-taking: each agent in the given order responds once to the human message, optionally writing real files to cwd. Returns utterances and written files. Use to orchestrate a headless multi-agent exchange from E2E tests or AI automation.",
+        triggers: { ko: "다중 에이전트 대화 턴테이킹 협업 교환 헤드리스" },
         params: {
-          message: { type: "string", required: true, description: "사람 메시지(과제/프롬프트)" },
+          message: { type: "string", required: true, description: "Human message (task or prompt) that starts the exchange." },
           agents: {
             type: "array",
             description:
-              "참여 순서 — preset id 문자열(claude,codex,gemini) 또는 {id,cmd,args}(헤드리스 E2E 런치). 기본 활성 preset",
+              "Ordered list of participants — preset id strings (claude, codex, gemini) or {id, cmd, args} objects for headless custom agent launch. Defaults to all active presets.",
           },
-          cwd: { type: "string", description: "작업 디렉터리(실파일 검증 대상)" },
+          cwd: { type: "string", description: "Working directory for real file operations; used to compute files written by agents." },
         },
         handler: async (p: any) => {
           const raw: any[] =

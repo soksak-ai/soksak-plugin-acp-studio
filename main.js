@@ -277,11 +277,12 @@ var main_default = {
     let activeStudio = null;
     ctx.subscriptions.push(
       app.commands.register("send", {
-        description: "\uD65C\uC131 Studio \uBDF0\uC5D0 \uC0AC\uB78C \uBA54\uC2DC\uC9C0\uB97C \uBCF4\uB0B8\uB2E4(textarea \uC804\uC1A1\uACFC \uB3D9\uC77C \u2014 \uB300\uD654 \uAD6C\uB3D9/\uCC38\uACAC). \uB178\uCD9C command \uC790\uB3D9\uD654\xB7E2E \uC6A9",
+        description: "Inject a human message into the active Studio view, equivalent to typing and submitting via the textarea. Use to drive or interject a multi-agent conversation programmatically (E2E, automation, AI control).",
+        triggers: { ko: "\uC2A4\uD29C\uB514\uC624 \uBA54\uC2DC\uC9C0 \uC804\uC1A1 \uB300\uD654 \uC8FC\uC785 \uCC38\uACAC" },
         params: {
-          text: { type: "string", required: true, description: "\uBCF4\uB0BC \uBA54\uC2DC\uC9C0" },
-          mode: { type: "string", description: "turn|facil|simul \u2014 \uC804\uC1A1 \uC804 \uBAA8\uB4DC \uC124\uC815(E2E\xB7\uC790\uB3D9\uD654). \uC0DD\uB7B5 \uC2DC \uC720\uC9C0" },
-          cut: { type: "boolean", description: "true=\uCC38\uACAC \uC2DC ask/wait \uBB34\uC2DC\uD558\uACE0 \uC989\uC2DC \uB04A\uAE30(E2E \uACB0\uC815\uB860)" }
+          text: { type: "string", required: true, description: "Message text to send." },
+          mode: { type: "string", description: "turn|facil|simul \u2014 set conversation mode before sending. Omit to keep current mode." },
+          cut: { type: "boolean", description: "true = immediately interrupt the current agent turn without the ask/wait dialog (deterministic for E2E)." }
         },
         handler: async (p) => {
           const text = String(p?.text ?? "").trim();
@@ -297,7 +298,8 @@ var main_default = {
     );
     ctx.subscriptions.push(
       app.commands.register("state", {
-        description: "\uD65C\uC131 Studio \uC758 \uB77C\uC774\uBE0C \uC0C1\uD0DC(\uBAA8\uB4DC\xB7\uC9C4\uD589 \uC5EC\uBD80\xB7\uB300\uD654 \uC218\xB7\uB85C\uC2A4\uD130 \uCCB4\uD06C\xB7\uC9C4\uD589 \uC911 \uBC1C\uD654\uC758 message \uC2A4\uD2B8\uB9AC\uBC0D \uAE38\uC774)",
+        description: "Return the live state of the active Studio view: conversation mode, running flag, utterance count, roster check states, and streaming length of in-progress agent turns. Use to observe the studio from E2E tests or AI automation.",
+        triggers: { ko: "\uC2A4\uD29C\uB514\uC624 \uC0C1\uD0DC \uB300\uD654 \uC9C4\uD589 \uD655\uC778 \uBAA8\uB4DC \uB85C\uC2A4\uD130" },
         params: {},
         handler: async () => {
           const st = activeStudio;
@@ -319,10 +321,11 @@ var main_default = {
     );
     ctx.subscriptions.push(
       app.commands.register("ask", {
-        description: "\uD504\uB86C\uD504\uD2B8 1\uD68C \u2014 \uB2E8\uC77C \uC5D0\uC774\uC804\uD2B8 connect+session+prompt \uD6C4 \uD14D\uC2A4\uD2B8\xB7\uD234\uCF5C \uBC18\uD658(\uD5E4\uB4DC\uB9AC\uC2A4)",
+        description: "Send a single prompt to one ACP agent (connect \u2192 new session \u2192 prompt) and return the response text and tool calls. Use for headless single-turn queries without opening the Studio UI.",
+        triggers: { ko: "\uC5D0\uC774\uC804\uD2B8 \uB2E8\uC77C \uC9C8\uBB38 \uD504\uB86C\uD504\uD2B8 \uD5E4\uB4DC\uB9AC\uC2A4 \uB2E8\uBC1C" },
         params: {
-          agent: { type: "string", description: "preset(claude|codex|gemini, \uAE30\uBCF8 claude)" },
-          text: { type: "string", required: true, description: "\uD504\uB86C\uD504\uD2B8" }
+          agent: { type: "string", description: "Agent preset id: claude | codex | gemini (default: claude)." },
+          text: { type: "string", required: true, description: "Prompt text to send to the agent." }
         },
         handler: async (p) => {
           const agent = p.agent || "claude";
@@ -346,14 +349,15 @@ var main_default = {
     );
     ctx.subscriptions.push(
       app.commands.register("converse", {
-        description: "\uB2E4\uC911 \uC5D0\uC774\uC804\uD2B8 1\uAD50\uD658 \u2014 agents(\uD0ED \uC21C\uC11C)\uAC00 \uAC01 1\uD68C \uD134\uD14C\uC774\uD0B9, cwd \uC5D0 \uC2E4\uD30C\uC77C. \uBC1C\uD654\xB7\uC4F4 \uD30C\uC77C \uBC18\uD658(\uD5E4\uB4DC\uB9AC\uC2A4 E2E)",
+        description: "Run a single round of multi-agent turn-taking: each agent in the given order responds once to the human message, optionally writing real files to cwd. Returns utterances and written files. Use to orchestrate a headless multi-agent exchange from E2E tests or AI automation.",
+        triggers: { ko: "\uB2E4\uC911 \uC5D0\uC774\uC804\uD2B8 \uB300\uD654 \uD134\uD14C\uC774\uD0B9 \uD611\uC5C5 \uAD50\uD658 \uD5E4\uB4DC\uB9AC\uC2A4" },
         params: {
-          message: { type: "string", required: true, description: "\uC0AC\uB78C \uBA54\uC2DC\uC9C0(\uACFC\uC81C/\uD504\uB86C\uD504\uD2B8)" },
+          message: { type: "string", required: true, description: "Human message (task or prompt) that starts the exchange." },
           agents: {
             type: "array",
-            description: "\uCC38\uC5EC \uC21C\uC11C \u2014 preset id \uBB38\uC790\uC5F4(claude,codex,gemini) \uB610\uB294 {id,cmd,args}(\uD5E4\uB4DC\uB9AC\uC2A4 E2E \uB7F0\uCE58). \uAE30\uBCF8 \uD65C\uC131 preset"
+            description: "Ordered list of participants \u2014 preset id strings (claude, codex, gemini) or {id, cmd, args} objects for headless custom agent launch. Defaults to all active presets."
           },
-          cwd: { type: "string", description: "\uC791\uC5C5 \uB514\uB809\uD130\uB9AC(\uC2E4\uD30C\uC77C \uAC80\uC99D \uB300\uC0C1)" }
+          cwd: { type: "string", description: "Working directory for real file operations; used to compute files written by agents." }
         },
         handler: async (p) => {
           const raw = Array.isArray(p.agents) && p.agents.length ? p.agents : ACTIVE_AGENTS.map((a) => a.id);
