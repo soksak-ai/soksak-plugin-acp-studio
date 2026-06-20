@@ -1,4 +1,4 @@
-// soksak-plugin-acp-studio — 여러 AI 코딩 에이전트를 한 워크스페이스에서 하나의 대화로 협업.
+// soksak-plugin-agents-clubhouse — 여러 AI 코딩 에이전트를 한 워크스페이스에서 하나의 대화로 협업.
 //
 // 한 뷰: Studio(체크박스 로스터·탭 순서 턴제/자유/동시 대화·실파일). 사교(회고·잡담)는 별도 채널이 아니라
 //   대화 자체에 자연스럽게 녹는다(페르소나가 유도) — 동료 직접 호출은 본문 '@이름' 한 채널로 단일화.
@@ -6,7 +6,8 @@
 //   app.bus(`acp.update.<connId>`) 라이브 구독. 락인 0 — ACP 표준만.
 //
 // 탭(드래그 정렬·체크박스)=참여 로스터, 탭 순서=턴 순서. 모드: turn(각 1회)/free(라운드 반복)/simul(전원 병렬).
-//   사람 참견 = 언제나 최우선(진행 턴 중단 → 부분응답 종결 보존 → 입력 주입 → 재구동). 자기 턴에 실작업.
+//   사람 참견 = 언제나 최우선(진행 턴 중단 → 부분응답 종결 보존 → 입력 주입 → 재구동).
+//   기본은 대화만 — 사용자가 명시적으로 작업을 시켜야 자기 턴에 실작업(파일/명령). 안 시키면 대화창에서 말로만.
 //   순수 로직(participants/nextSpeaker/buildPrompt/inviteePreamble/detectMentions/drive*)은 conversation.ts(단위검증).
 
 import { createEngine } from "./engine";
@@ -135,7 +136,7 @@ export default {
   activate(ctx: any) {
     const app = ctx.app;
     const core = (name: string, params?: any) =>
-      app.commands.execute("plugin.soksak-plugin-acp-core." + name, params ?? {});
+      app.commands.execute("plugin.soksak-plugin-agents-acp." + name, params ?? {});
     const engine = createEngine(app);
 
     let lang = app.locale?.() ?? "ko"; // 현재 언어 취득 — 없으면 ko 폴백

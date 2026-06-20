@@ -1,15 +1,15 @@
 {
   "spec": "soksak-plugin-spec@1",
-  "id": "soksak-plugin-acp-studio",
+  "id": "soksak-plugin-agents-clubhouse",
   "name": {
-    "en": "ACP Studio",
-    "ko": "ACP Studio"
+    "en": "Agents Clubhouse",
+    "ko": "에이전트 클럽하우스"
   },
   "version": "0.1.0",
-  "repo": "https://github.com/soksak-ai/soksak-plugin-acp-studio.git",
+  "repo": "https://github.com/soksak-ai/soksak-plugin-agents-clubhouse.git",
   "description": {
-    "en": "Collaborate with multiple AI coding agents (Claude, Codex, Gemini) in one workspace — select 1–3 via checkboxes, work in turn-based, free, or simultaneous mode, and mention a peer directly with '@name'. ACP-based; depends on acp-core.",
-    "ko": "여러 AI 코딩 에이전트(Claude·Codex·Gemini)를 한 워크스페이스에서 하나의 대화로 — 체크박스로 1~3 선택, 탭 순서대로 턴제·자유·동시 모드 협업해 실파일 작업. 본문 '@이름' 으로 동료 직접 호출. ACP 기반, acp-core 의존."
+    "en": "A hub that brings multiple AI coding agents (Claude, Codex, Gemini) together in one workspace — select 1–3 via checkboxes, work in turn-based, free, or simultaneous mode, and mention a peer directly with '@name'. Runs agents through the agents-acp runtime.",
+    "ko": "여러 AI 코딩 에이전트(Claude·Codex·Gemini)를 한 워크스페이스에 모아주는 허브 — 체크박스로 1~3 선택, 탭 순서대로 턴제·자유·동시 모드 협업해 실파일 작업. 본문 '@이름' 으로 동료 직접 호출. 에이전트 실행은 agents-acp 런타임 경유."
   },
   "entry": "main.js",
   "permissions": [
@@ -19,7 +19,7 @@
     "fs:read"
   ],
   "dependencies": {
-    "soksak-plugin-acp-core": "^0.1.0"
+    "soksak-plugin-agents-acp": "^0.1.0"
   },
   "configuration": [
     {

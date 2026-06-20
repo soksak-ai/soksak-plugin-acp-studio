@@ -1,7 +1,7 @@
-# soksak-plugin-acp-studio
+# soksak-plugin-agents-clubhouse
 
 여러 AI 코딩 에이전트(Claude·Codex)를 한 워크스페이스에서 **하나의 대화**로 협업시키는 soksak 플러그인.
-ACP(Agent Client Protocol) 기반, `soksak-plugin-acp-core`(엔진) 의존.
+ACP(Agent Client Protocol) 기반, `soksak-plugin-agents-acp`(엔진) 의존.
 
 참여 모델을 체크박스로 선택, 탭 순서로 정렬, 세 가지 대화 모드로 협업해 실파일 작업. 동료 직접 호출은
 본문 `@이름` 한 채널로 단일화한다.
@@ -56,4 +56,4 @@ npm run typecheck && npm run test && npm run build
 | `input` | `input` | 메시지 입력 |
 | `tab` | `tab/<agentId>` | 에이전트 탭(체크·드래그) |
 
-주소 예: `content/view/soksak-plugin-acp-studio.studio/node/send`. `sok ui.tree` 로 현재 노출 노드 확인.
+주소 예: `content/view/soksak-plugin-agents-clubhouse.studio/node/send`. `sok ui.tree` 로 현재 노출 노드 확인.

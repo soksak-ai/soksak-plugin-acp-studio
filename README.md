@@ -1,7 +1,7 @@
-# soksak-plugin-acp-studio
+# soksak-plugin-agents-clubhouse
 
 A soksak plugin for collaborating with multiple AI coding agents (Claude, Codex) in **a single conversation** within one workspace.
-Based on ACP (Agent Client Protocol); depends on `soksak-plugin-acp-core` (engine).
+Based on ACP (Agent Client Protocol); depends on `soksak-plugin-agents-acp` (engine).
 
 Select participating models via checkboxes, order them by tab position, and collaborate across three conversation modes to work on real files. Addressing a peer directly is unified to a single channel: `@name` in the message body.
 
@@ -49,4 +49,4 @@ DOM nodes exposed to external access (address-based click/measure · E2E) are de
 | `input` | `input` | Message input field |
 | `tab` | `tab/<agentId>` | Agent tab (checkbox · drag) |
 
-Address example: `content/view/soksak-plugin-acp-studio.studio/node/send`. Use `sok ui.tree` to inspect currently exposed nodes.
+Address example: `content/view/soksak-plugin-agents-clubhouse.studio/node/send`. Use `sok ui.tree` to inspect currently exposed nodes.

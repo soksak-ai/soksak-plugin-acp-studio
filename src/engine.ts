@@ -5,7 +5,7 @@
 //
 // acp-core 의존: connect/session-new/prompt/disconnect 를 app.commands 로 호출(엔진은 코어가 소유).
 
-const CORE = "plugin.soksak-plugin-acp-core.";
+const CORE = "plugin.soksak-plugin-agents-acp.";
 
 export interface Conn {
   connId: number;

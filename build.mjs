@@ -5,5 +5,5 @@ const opts = {
   target: "es2022", define: { "process.env.NODE_ENV": '"production"' },
   outfile: "main.js", minify: false, legalComments: "none", logLevel: "info",
 };
-if (process.argv.includes("--watch")) { const c = await context(opts); await c.watch(); console.log("[acp-studio] watching …"); }
-else { await build(opts); console.log("[acp-studio] built main.js"); }
+if (process.argv.includes("--watch")) { const c = await context(opts); await c.watch(); console.log("[agents-clubhouse] watching …"); }
+else { await build(opts); console.log("[agents-clubhouse] built main.js"); }

@@ -131,6 +131,14 @@ describe("buildPrompt — canonical 재주입(방 구성 + 전체 대화)", () =
     const p = buildPrompt({ roster: r, conversation: conv, speaker: "codex", preamble: "초대장X" });
     expect(p.startsWith("초대장X")).toBe(true);
   });
+  it("기본 지시 — 사용자 명시 요청 없으면 대화창에서 말로만, 파일/명령 금지", () => {
+    const p = buildPrompt({ roster: r, conversation: conv, speaker: "codex" });
+    expect(p).toContain("대화창에서 말로만");
+    expect(p).toContain("작업을 시키지 않았다면");
+    expect(p).toContain("파일을 만들거나 고치지 말고");
+    expect(p).toContain("명령도 실행하지 마세요");
+    expect(p).toContain("분명히 작업을 지시한 경우에만");
+  });
   it("대화가 비면 [지금까지의 대화] 블록이 없다", () => {
     const p = buildPrompt({ roster: r, conversation: [], speaker: "claude" });
     expect(p).not.toContain("[지금까지의 대화]");
@@ -315,6 +323,14 @@ describe("inviteePreamble — 방 정체성 + base 결 + 모드별 발언 규범
     expect(p).toContain("독백");
     expect(p).toContain("침묵");
     expect(p).toContain("@이름");
+  });
+  it("기본은 대화만 — 사용자 명시 요청 없으면 파일/명령 금지(주입 지시어)", () => {
+    const p = inviteePreamble("claude", ["claude", "codex"], nameOf, "/repo");
+    expect(p).toContain("대화창에서 말로만");
+    expect(p).toContain("작업을 시키지 않았다면");
+    expect(p).toContain("파일을 만들거나 고치지 말고");
+    expect(p).toContain("명령도 실행하지 마세요");
+    expect(p).toContain("분명히 작업을 지시한 경우에만");
   });
   it("mode=simul — 동시 노트(끝까지·기다림, 강제 아님)", () => {
     const p = inviteePreamble("claude", ["claude", "codex"], nameOf, "/repo", "simul");
