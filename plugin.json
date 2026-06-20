@@ -1,10 +1,10 @@
 {
   "spec": "soksak-plugin-spec@1",
   "id": "soksak-plugin-acp-studio",
-  "name": "ACP Studio",
+  "name": { "en": "ACP Studio", "ko": "ACP Studio" },
   "version": "0.1.0",
   "repo": "https://github.com/soksak-ai/soksak-plugin-acp-studio.git",
-  "description": "여러 AI 코딩 에이전트(Claude·Codex·Gemini)를 한 워크스페이스에서 하나의 대화로 — 체크박스로 1~3 선택, 탭 순서대로 턴제·자유·동시 모드 협업해 실파일 작업. 본문 '@이름' 으로 동료 직접 호출. ACP 기반, acp-core 의존.",
+  "description": { "en": "Collaborate with multiple AI coding agents (Claude, Codex, Gemini) in one workspace — select 1–3 via checkboxes, work in turn-based, free, or simultaneous mode, and mention a peer directly with '@name'. ACP-based; depends on acp-core.", "ko": "여러 AI 코딩 에이전트(Claude·Codex·Gemini)를 한 워크스페이스에서 하나의 대화로 — 체크박스로 1~3 선택, 탭 순서대로 턴제·자유·동시 모드 협업해 실파일 작업. 본문 '@이름' 으로 동료 직접 호출. ACP 기반, acp-core 의존." },
   "entry": "main.js",
   "permissions": ["ui", "commands", "programs", "fs:read"],
   "dependencies": { "soksak-plugin-acp-core": "^0.1.0" },
@@ -50,17 +50,17 @@
     "views": [
       {
         "id": "studio",
-        "title": "Studio",
+        "title": { "en": "Studio", "ko": "Studio" },
         "icon": "🎛️",
         "placements": ["content"],
         "defaultPlacement": "content"
       }
     ],
     "commands": [
-      { "name": "send", "title": "활성 Studio 에 사람 메시지 전송(라이브 구동·자동화)" },
-      { "name": "state", "title": "활성 Studio 라이브 상태(스트리밍 길이 등 — 관찰·E2E)" },
-      { "name": "ask", "title": "프롬프트 1회(단일 에이전트, 헤드리스)" },
-      { "name": "converse", "title": "다중 에이전트 1교환(턴테이킹, 헤드리스 E2E)" }
+      { "name": "send", "title": { "en": "Send Message to Studio", "ko": "활성 Studio 에 사람 메시지 전송(라이브 구동·자동화)" } },
+      { "name": "state", "title": { "en": "Studio Live State", "ko": "활성 Studio 라이브 상태(스트리밍 길이 등 — 관찰·E2E)" } },
+      { "name": "ask", "title": { "en": "Ask (single agent, headless)", "ko": "프롬프트 1회(단일 에이전트, 헤드리스)" } },
+      { "name": "converse", "title": { "en": "Converse (multi-agent, headless)", "ko": "다중 에이전트 1교환(턴테이킹, 헤드리스 E2E)" } }
     ],
     "nodes": [
       { "id": "send", "description": "전송 버튼" },
@@ -73,7 +73,7 @@
     "programs": [
       {
         "id": "acp-studio",
-        "title": "Studio",
+        "title": { "en": "Studio", "ko": "Studio" },
         "path": { "ko": "유틸리티", "en": "Utility" },
         "kind": "view",
         "view": "studio"
