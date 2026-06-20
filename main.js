@@ -46,6 +46,107 @@ function createEngine(app) {
   return { connect, newSession, ask, cancel, disconnect, snapshot, diffWritten };
 }
 
+// src/i18n.ts
+var strings = {
+  placeholder: {
+    en: "Message\u2026 (Enter to send, Shift+Enter for newline, @ to mention a model) \u2014 interject anytime",
+    ko: "\uBA54\uC2DC\uC9C0\u2026 (Enter \uC804\uC1A1, Shift+Enter \uC904\uBC14\uAFC8, @\uB85C \uBAA8\uB378 \uC9C0\uBAA9) \u2014 \uC5B8\uC81C\uB098 \uCC38\uACAC \uAC00\uB2A5"
+  },
+  sendBtn: {
+    en: "Send",
+    ko: "\uC804\uC1A1"
+  },
+  statusIdle: {
+    en: "Idle",
+    ko: "\uB300\uAE30"
+  },
+  modeFacil: {
+    en: "Facil",
+    ko: "\uC9C4\uD589"
+  },
+  modeTurn: {
+    en: "Turn",
+    ko: "\uC21C\uCC28"
+  },
+  modeSimul: {
+    en: "Simul",
+    ko: "\uB3D9\uC2DC"
+  },
+  crownTitle: {
+    en: "Set as facilitator",
+    ko: "\uC9C4\uD589\uC790\uB85C \uC9C0\uC815"
+  },
+  statusInterject: {
+    en: "Interjected \u2014 reflected after current utterance ends",
+    ko: "\uCC38\uACAC \u2014 \uD604\uC7AC \uBC1C\uD654 \uC885\uACB0 \uD6C4 \uBC18\uC601"
+  },
+  statusQueued: {
+    en: "Queued \u2014 reflected after current conversation ends",
+    ko: "\uB300\uAE30 \uC911 \u2014 \uD604\uC7AC \uB300\uD654\uAC00 \uB05D\uB098\uBA74 \uBC18\uC601"
+  },
+  modalTitle: {
+    en: "{who} is speaking",
+    ko: "{who} \uB9D0\uD558\uB294 \uC911"
+  },
+  modalMsg: {
+    en: "Cut in now, or add after they finish?",
+    ko: "\uC9C0\uAE08 \uB07C\uC5B4\uB4E4\uAE4C\uC694, \uB05D\uB098\uBA74 \uB123\uC744\uAE4C\uC694?"
+  },
+  btnCut: {
+    en: "Cut now",
+    ko: "\uC9C0\uAE08 \uB04A\uAE30"
+  },
+  btnWait: {
+    en: "Add after",
+    ko: "\uB05D\uB098\uBA74 \uB123\uAE30"
+  },
+  btnCancel: {
+    en: "Cancel",
+    ko: "\uCDE8\uC18C"
+  },
+  pending: {
+    en: "Responding\u2026",
+    ko: "\uC751\uB2F5 \uC911\u2026"
+  },
+  thinkBadge: {
+    en: "\u{1F4AD} Think",
+    ko: "\u{1F4AD} \uC0DD\uAC01"
+  },
+  thinkBadgeTitle: {
+    en: "Click to expand/collapse reasoning",
+    ko: "\uD074\uB9AD\uD558\uBA74 \uB9AC\uC18C\uB2DD \uD3BC\uCE58\uAE30/\uC811\uAE30"
+  },
+  whoMe: {
+    en: "Me",
+    ko: "\uB098"
+  },
+  queuedTag: {
+    en: " \xB7 queued",
+    ko: " \xB7 \uB300\uAE30 \uC911"
+  },
+  statusSimul: {
+    en: "Responding simultaneously\u2026",
+    ko: "\uB3D9\uC2DC \uC751\uB2F5 \uC911\u2026"
+  },
+  statusFacilDone: {
+    en: "Facilitation cap reached \u2014 wrapping up",
+    ko: "\uC9C4\uD589 \uD55C\uB3C4 \uB3C4\uB2EC \u2014 \uB9C8\uBB34\uB9AC"
+  },
+  whoConversation: {
+    en: "Conversation",
+    ko: "\uB300\uD654"
+  }
+};
+function t(key, lang) {
+  const e = strings[key];
+  return e[lang] ?? e.en;
+}
+function tp(key, lang, vars) {
+  let s = t(key, lang);
+  for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
+  return s;
+}
+
 // src/conversation.ts
 function participants(roster) {
   return roster.filter((r) => r.checked).map((r) => r.id);
@@ -266,6 +367,12 @@ var main_default = {
     const app = ctx.app;
     const core = (name, params) => app.commands.execute("plugin.soksak-plugin-acp-core." + name, params ?? {});
     const engine = createEngine(app);
+    let lang = app.locale?.() ?? "ko";
+    ctx.subscriptions.push(
+      app.events.on("locale.changed", (e) => {
+        lang = e.language;
+      })
+    );
     const settingPolicy = () => app.settings?.get("permissionPolicy") || void 0;
     const settingMode = () => {
       const v = app.settings?.get("kibitzDefault");
@@ -448,11 +555,11 @@ var main_default = {
       const msgs = el("div", "st-msgs");
       const inrow = el("div", "st-in");
       const ta = document.createElement("textarea");
-      ta.placeholder = "\uBA54\uC2DC\uC9C0\u2026 (Enter \uC804\uC1A1, Shift+Enter \uC904\uBC14\uAFC8, @\uB85C \uBAA8\uB378 \uC9C0\uBAA9) \u2014 \uC5B8\uC81C\uB098 \uCC38\uACAC \uAC00\uB2A5";
+      ta.placeholder = t("placeholder", lang);
       ta.rows = 1;
       ta.dataset.node = "input";
       const send = document.createElement("button");
-      send.textContent = "\uC804\uC1A1";
+      send.textContent = t("sendBtn", lang);
       send.dataset.node = "send";
       const mentionPop = el("div", "st-mention");
       mentionPop.style.display = "none";
@@ -480,12 +587,12 @@ var main_default = {
       bar.append(elText("b", "Studio"), tabsEl, kibEl, status);
       root.append(bar, msgs, inrow);
       const doSend = () => {
-        const t = ta.value.trim();
-        if (!t) return;
+        const t2 = ta.value.trim();
+        if (!t2) return;
         ta.value = "";
         hideMention();
-        onHuman(st, t, false, () => {
-          ta.value = t;
+        onHuman(st, t2, false, () => {
+          ta.value = t2;
           ta.focus();
         });
       };
@@ -499,10 +606,10 @@ var main_default = {
       };
       const renderMention = () => {
         mentionPop.replaceChildren();
-        menTokens.forEach((t, i) => {
+        menTokens.forEach((t2, i) => {
           const row = el("div", "st-mention-item" + (i === menActive ? " on" : ""));
-          row.style.color = COLOR[t.id] ?? "var(--fg,#ddd)";
-          row.append(elText("span", "@", "st-mention-at"), elText("span", t.label, "st-mention-nm"));
+          row.style.color = COLOR[t2.id] ?? "var(--fg,#ddd)";
+          row.append(elText("span", "@", "st-mention-at"), elText("span", t2.label, "st-mention-nm"));
           row.addEventListener("pointerdown", (e) => {
             e.preventDefault();
             pickMention(i);
@@ -529,7 +636,7 @@ var main_default = {
         if (!m) return hideMention();
         const q = m[1].toLowerCase();
         const checked = new Set(participants(st.roster));
-        menTokens = ACTIVE_AGENTS.filter((a) => checked.has(a.id)).map((a) => ({ label: a.label, id: a.id })).filter((t) => !q || t.label.toLowerCase().startsWith(q) || t.id.startsWith(q));
+        menTokens = ACTIVE_AGENTS.filter((a) => checked.has(a.id)).map((a) => ({ label: a.label, id: a.id })).filter((t2) => !q || t2.label.toLowerCase().startsWith(q) || t2.id.startsWith(q));
         if (!menTokens.length) return hideMention();
         menStart = caret - m[0].length;
         menActive = 0;
@@ -565,7 +672,7 @@ var main_default = {
           doSend();
         }
       });
-      setStatus(st, "\uB300\uAE30");
+      setStatus(st, t("statusIdle", lang));
     }
     function setMode(st, m) {
       st.mode = m;
@@ -585,7 +692,7 @@ var main_default = {
         b.addEventListener("click", () => setMode(st, m));
         return b;
       };
-      st.kibEl.append(mk("facil", "\uC9C4\uD589"), mk("turn", "\uC21C\uCC28"), mk("simul", "\uB3D9\uC2DC"));
+      st.kibEl.append(mk("facil", t("modeFacil", lang)), mk("turn", t("modeTurn", lang)), mk("simul", t("modeSimul", lang)));
     }
     function renderTabs(st, tabsEl) {
       tabsEl.replaceChildren();
@@ -602,7 +709,7 @@ var main_default = {
         chip.append(chk, nm);
         if (st.mode === "facil" && entry.checked) {
           const crown = elText("span", "\u{1F451}", "st-crown" + (entry.id === st.facilitatorId ? " on" : ""));
-          crown.title = "\uC9C4\uD589\uC790\uB85C \uC9C0\uC815";
+          crown.title = t("crownTitle", lang);
           crown.dataset.node = `crown/${entry.id}`;
           crown.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -653,8 +760,8 @@ var main_default = {
         tabsEl.appendChild(chip);
       });
     }
-    function setStatus(st, t) {
-      st.status.textContent = t;
+    function setStatus(st, t2) {
+      st.status.textContent = t2;
     }
     function onHuman(st, text, forceCut, onCancel) {
       if (!st.running) {
@@ -667,14 +774,14 @@ var main_default = {
         st.pendingHuman.push(text);
         if (kind === "cut") {
           for (const c of st.actives) engine.cancel(c.connId, c.sessionId);
-          setStatus(st, "\uCC38\uACAC \u2014 \uD604\uC7AC \uBC1C\uD654 \uC885\uACB0 \uD6C4 \uBC18\uC601");
+          setStatus(st, t("statusInterject", lang));
         } else {
           renderQueued(st);
-          setStatus(st, "\uB300\uAE30 \uC911 \u2014 \uD604\uC7AC \uB300\uD654\uAC00 \uB05D\uB098\uBA74 \uBC18\uC601");
+          setStatus(st, t("statusQueued", lang));
         }
       };
       if (forceCut) return apply("cut");
-      const who = [...st.actives].map((c) => nameOf(c.agentId)).join(", ") || "\uB300\uD654";
+      const who = [...st.actives].map((c) => nameOf(c.agentId)).join(", ") || t("whoConversation", lang);
       showInterjectAlert(st, who, (choice) => {
         if (choice === "cut") apply("cut");
         else if (choice === "wait") apply("wait");
@@ -684,9 +791,9 @@ var main_default = {
     function injectPending(st) {
       clearQueued(st);
       clearModal(st);
-      for (const t of st.pendingHuman) {
-        st.conv.push({ who: "human", text: t });
-        renderUser(st, t);
+      for (const t2 of st.pendingHuman) {
+        st.conv.push({ who: "human", text: t2 });
+        renderUser(st, t2);
       }
       st.pendingHuman = [];
     }
@@ -847,7 +954,7 @@ var main_default = {
           }
         }
       }
-      setStatus(st, "\uC9C4\uD589 \uD55C\uB3C4 \uB3C4\uB2EC \u2014 \uB9C8\uBB34\uB9AC");
+      setStatus(st, t("statusFacilDone", lang));
     }
     function humanTargets(st) {
       const ids = st.roster.map((r) => r.id);
@@ -892,7 +999,7 @@ var main_default = {
             conversation: st.conv,
             nameOf,
             preamble: (s) => inviteePreamble(s, ids, nameOf, st.cwd, "simul"),
-            onTurnStart: () => setStatus(st, "\uB3D9\uC2DC \uC751\uB2F5 \uC911\u2026"),
+            onTurnStart: () => setStatus(st, t("statusSimul", lang)),
             turn: (speaker, prompt) => runOneTurn(st, speaker, prompt)
           });
         } else if (st.mode === "facil") {
@@ -919,23 +1026,23 @@ var main_default = {
         return runLoop(st);
       }
       st.running = false;
-      setStatus(st, "\uB300\uAE30");
+      setStatus(st, t("statusIdle", lang));
     }
     function onStream(cur, evt) {
       const u = evt?.update;
       if (!u || u.sessionUpdate !== "agent_message_chunk") return;
-      const t = u.content?.text ?? "";
-      if (t !== "" && t === cur.liveRaw) return;
-      cur.liveRaw += t;
-      if (t) {
+      const t2 = u.content?.text ?? "";
+      if (t2 !== "" && t2 === cur.liveRaw) return;
+      cur.liveRaw += t2;
+      if (t2) {
         if (!cur.bubble) cur.bubble = cur.row.toBubble();
-        cur.bubble.textContent = (cur.bubble.textContent || "") + t;
+        cur.bubble.textContent = (cur.bubble.textContent || "") + t2;
       }
     }
     function renderUser(st, text) {
       const row = el("div", "st-row user");
       const who = el("div", "st-who");
-      who.append(elText("span", "\uB098", "st-who-name"), elText("span", ` \xB7 ${hhmmss()}`, "st-who-time"));
+      who.append(elText("span", t("whoMe", lang), "st-who-name"), elText("span", ` \xB7 ${hhmmss()}`, "st-who-time"));
       row.append(who, bubble(text));
       st.msgs.appendChild(row);
       scroll(st);
@@ -946,7 +1053,7 @@ var main_default = {
       const row = el("div", "st-row user queued");
       row.dataset.queued = "1";
       const who = el("div", "st-who");
-      who.append(elText("span", "\uB098", "st-who-name"), elText("span", " \xB7 \uB300\uAE30 \uC911", "st-queued-tag"));
+      who.append(elText("span", t("whoMe", lang), "st-who-name"), elText("span", t("queuedTag", lang), "st-queued-tag"));
       row.append(who, bubble(last));
       st.msgs.appendChild(row);
       scroll(st);
@@ -962,8 +1069,8 @@ var main_default = {
       st.msgs.parentElement?.querySelectorAll(".st-modal").forEach((n) => n.remove());
       const back = el("div", "st-modal");
       const box = el("div", "st-modal-box");
-      box.append(elText("div", `${who} \uB9D0\uD558\uB294 \uC911`, "st-modal-title"));
-      box.append(elText("div", "\uC9C0\uAE08 \uB07C\uC5B4\uB4E4\uAE4C\uC694, \uB05D\uB098\uBA74 \uB123\uC744\uAE4C\uC694?", "st-modal-msg"));
+      box.append(elText("div", tp("modalTitle", lang, { who }), "st-modal-title"));
+      box.append(elText("div", t("modalMsg", lang), "st-modal-msg"));
       const btns = el("div", "st-modal-btns");
       const close = (c) => {
         back.remove();
@@ -975,7 +1082,7 @@ var main_default = {
         b.addEventListener("click", () => close(c));
         return b;
       };
-      btns.append(mk("\uC9C0\uAE08 \uB04A\uAE30", "cut", true), mk("\uB05D\uB098\uBA74 \uB123\uAE30", "wait"), mk("\uCDE8\uC18C", "cancel"));
+      btns.append(mk(t("btnCut", lang), "cut", true), mk(t("btnWait", lang), "wait"), mk(t("btnCancel", lang), "cancel"));
       box.append(btns);
       back.append(box);
       back.addEventListener("click", (e) => {
@@ -993,7 +1100,7 @@ var main_default = {
       timeEl.textContent = ` \xB7 ${startStamp}`;
       who.append(nameEl, timeEl);
       const pending = el("div", "st-pending");
-      pending.append(el("span", "st-dot"), document.createTextNode("\uC751\uB2F5 \uC911\u2026"));
+      pending.append(el("span", "st-dot"), document.createTextNode(t("pending", lang)));
       row.append(who, pending);
       st.msgs.appendChild(row);
       scroll(st);
@@ -1029,8 +1136,8 @@ var main_default = {
         // 리소닝/띵킹(agent_thought_chunk) — 💭 배지(클릭하면 펼침). 작업 텍스트와 분리, 기본 접힘.
         setReasoning(text) {
           if (!text.trim()) return;
-          const badge = elText("span", "\u{1F4AD} \uC0DD\uAC01", "st-think");
-          badge.title = "\uD074\uB9AD\uD558\uBA74 \uB9AC\uC18C\uB2DD \uD3BC\uCE58\uAE30/\uC811\uAE30";
+          const badge = elText("span", t("thinkBadge", lang), "st-think");
+          badge.title = t("thinkBadgeTitle", lang);
           const panel = elText("div", text, "st-think-body");
           panel.style.display = "none";
           badge.addEventListener("click", () => {

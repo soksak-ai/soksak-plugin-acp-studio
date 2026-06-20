@@ -10,6 +10,7 @@
 //   순수 로직(participants/nextSpeaker/buildPrompt/inviteePreamble/detectMentions/drive*)은 conversation.ts(단위검증).
 
 import { createEngine } from "./engine";
+import { t, tp } from "./i18n";
 import {
   buildPrompt,
   detectMentions,
@@ -136,6 +137,13 @@ export default {
     const core = (name: string, params?: any) =>
       app.commands.execute("plugin.soksak-plugin-acp-core." + name, params ?? {});
     const engine = createEngine(app);
+
+    let lang = app.locale?.() ?? "ko"; // 현재 언어 취득 — 없으면 ko 폴백
+    ctx.subscriptions.push(
+      app.events.on("locale.changed", (e: { language: string }) => {
+        lang = e.language;
+      }),
+    );
 
     const settingPolicy = (): string | undefined =>
       (app.settings?.get("permissionPolicy") as string) || undefined;
@@ -349,11 +357,11 @@ export default {
       const msgs = el("div", "st-msgs");
       const inrow = el("div", "st-in");
       const ta = document.createElement("textarea");
-      ta.placeholder = "메시지… (Enter 전송, Shift+Enter 줄바꿈, @로 모델 지목) — 언제나 참견 가능";
+      ta.placeholder = t("placeholder", lang);
       ta.rows = 1;
       ta.dataset.node = "input"; // contributes.nodes — 외부 주소(ui.input) 노출
       const send = document.createElement("button");
-      send.textContent = "전송";
+      send.textContent = t("sendBtn", lang);
       send.dataset.node = "send";
       const mentionPop = el("div", "st-mention"); // @자동완성 팝업(체크된 참가 모델)
       mentionPop.style.display = "none";
@@ -474,7 +482,7 @@ export default {
           doSend(); // 진행 중이면 onHuman 이 모달, 멈춰 있으면 바로 전송
         }
       });
-      setStatus(st, "대기");
+      setStatus(st, t("statusIdle", lang));
     }
 
     // 모드 변경 단일 경로 — 버튼 클릭·send 명령 모두 여기로. st.mode + 버튼 하이라이트 + 탭(👑) 을 함께 동기화.
@@ -498,7 +506,7 @@ export default {
         b.addEventListener("click", () => setMode(st, m));
         return b;
       };
-      st.kibEl.append(mk("facil", "진행"), mk("turn", "순차"), mk("simul", "동시"));
+      st.kibEl.append(mk("facil", t("modeFacil", lang)), mk("turn", t("modeTurn", lang)), mk("simul", t("modeSimul", lang)));
     }
 
     // 로스터 탭 — 체크박스(참여) + 드래그(순서=턴 순서). 브랜드 색.
@@ -518,7 +526,7 @@ export default {
         // 진행 모드 — 체크된 탭에 👑(진행자 지정). 현 진행자만 채워진 왕관(시각). 지정은 아래 pointer 처리.
         if (st.mode === "facil" && entry.checked) {
           const crown = elText("span", "👑", "st-crown" + (entry.id === st.facilitatorId ? " on" : ""));
-          crown.title = "진행자로 지정";
+          crown.title = t("crownTitle", lang);
           crown.dataset.node = `crown/${entry.id}`; // contributes.nodes — ui.input.click 로 진행자 지정
           // click 리스너 — ui.input.click(합성 click) 경로(사람 클릭은 chip pointerup 가 처리, 중복 무해).
           crown.addEventListener("click", (e) => {
@@ -597,15 +605,15 @@ export default {
         st.pendingHuman.push(text);
         if (kind === "cut") {
           for (const c of st.actives) engine.cancel(c.connId, c.sessionId); // 진행 중 전부 중단(동시=N)
-          setStatus(st, "참견 — 현재 발화 종결 후 반영");
+          setStatus(st, t("statusInterject", lang));
         } else {
           renderQueued(st); // 안 끊음 — "대기 중" 배지로 미반영 표시(현 흐름 끝나면 주입)
-          setStatus(st, "대기 중 — 현재 대화가 끝나면 반영");
+          setStatus(st, t("statusQueued", lang));
         }
       };
       if (forceCut) return apply("cut"); // send 명령 cut:true — E2E 결정론
       // 진행 중 입력 = 모달로 전송 방식 선택(LLM 이 뭔가 하는 중이므로).
-      const who = [...st.actives].map((c) => nameOf(c.agentId)).join(", ") || "대화";
+      const who = [...st.actives].map((c) => nameOf(c.agentId)).join(", ") || t("whoConversation", lang);
       showInterjectAlert(st, who, (choice) => {
         if (choice === "cut") apply("cut");
         else if (choice === "wait") apply("wait");
@@ -813,7 +821,7 @@ export default {
         }
         // stall(동료 응답 완료) → 다음 LOOP(진행자 복귀·재판단)
       }
-      setStatus(st, "진행 한도 도달 — 마무리"); // 하드 cap 도달 → 종료
+      setStatus(st, t("statusFacilDone", lang)); // 하드 cap 도달 → 종료
     }
 
     // 라이브 구동 — 모드별 한 구동(turn=순차 1라운드 / simul=병렬 1라운드 / facil=진행자 LOOP). turn·simul 뒤엔
@@ -866,7 +874,7 @@ export default {
             conversation: st.conv,
             nameOf,
             preamble: (s) => inviteePreamble(s, ids, nameOf, st.cwd, "simul"),
-            onTurnStart: () => setStatus(st, "동시 응답 중…"),
+            onTurnStart: () => setStatus(st, t("statusSimul", lang)),
             turn: (speaker, prompt) => runOneTurn(st, speaker, prompt),
           });
         } else if (st.mode === "facil") {
@@ -898,7 +906,7 @@ export default {
         return runLoop(st); // 꼬리재귀 — running 유지한 채 재구동
       }
       st.running = false;
-      setStatus(st, "대기");
+      setStatus(st, t("statusIdle", lang));
     }
 
     // 라이브 스트리밍 — 현재 화자의 agent_message_chunk 를 버블에 누적. 코어 dedup 일치(최종 완결 재전송, 누적
@@ -920,7 +928,7 @@ export default {
     function renderUser(st: StudioState, text: string) {
       const row = el("div", "st-row user");
       const who = el("div", "st-who");
-      who.append(elText("span", "나", "st-who-name"), elText("span", ` · ${hhmmss()}`, "st-who-time"));
+      who.append(elText("span", t("whoMe", lang), "st-who-name"), elText("span", ` · ${hhmmss()}`, "st-who-time"));
       row.append(who, bubble(text));
       st.msgs.appendChild(row);
       scroll(st);
@@ -933,7 +941,7 @@ export default {
       const row = el("div", "st-row user queued");
       row.dataset.queued = "1";
       const who = el("div", "st-who");
-      who.append(elText("span", "나", "st-who-name"), elText("span", " · 대기 중", "st-queued-tag"));
+      who.append(elText("span", t("whoMe", lang), "st-who-name"), elText("span", t("queuedTag", lang), "st-queued-tag"));
       row.append(who, bubble(last));
       st.msgs.appendChild(row);
       scroll(st);
@@ -953,8 +961,8 @@ export default {
       st.msgs.parentElement?.querySelectorAll(".st-modal").forEach((n) => n.remove()); // 중복 방지
       const back = el("div", "st-modal");
       const box = el("div", "st-modal-box");
-      box.append(elText("div", `${who} 말하는 중`, "st-modal-title"));
-      box.append(elText("div", "지금 끼어들까요, 끝나면 넣을까요?", "st-modal-msg"));
+      box.append(elText("div", tp("modalTitle", lang, { who }), "st-modal-title"));
+      box.append(elText("div", t("modalMsg", lang), "st-modal-msg"));
       const btns = el("div", "st-modal-btns");
       const close = (c: "cut" | "wait" | "cancel") => {
         back.remove();
@@ -966,7 +974,7 @@ export default {
         b.addEventListener("click", () => close(c));
         return b;
       };
-      btns.append(mk("지금 끊기", "cut", true), mk("끝나면 넣기", "wait"), mk("취소", "cancel"));
+      btns.append(mk(t("btnCut", lang), "cut", true), mk(t("btnWait", lang), "wait"), mk(t("btnCancel", lang), "cancel"));
       box.append(btns);
       back.append(box);
       back.addEventListener("click", (e) => {
@@ -986,7 +994,7 @@ export default {
       timeEl.textContent = ` · ${startStamp}`;
       who.append(nameEl, timeEl);
       const pending = el("div", "st-pending");
-      pending.append(el("span", "st-dot"), document.createTextNode("응답 중…"));
+      pending.append(el("span", "st-dot"), document.createTextNode(t("pending", lang)));
       row.append(who, pending);
       st.msgs.appendChild(row);
       scroll(st);
@@ -1022,8 +1030,8 @@ export default {
         // 리소닝/띵킹(agent_thought_chunk) — 💭 배지(클릭하면 펼침). 작업 텍스트와 분리, 기본 접힘.
         setReasoning(text: string) {
           if (!text.trim()) return;
-          const badge = elText("span", "💭 생각", "st-think");
-          badge.title = "클릭하면 리소닝 펼치기/접기";
+          const badge = elText("span", t("thinkBadge", lang), "st-think");
+          badge.title = t("thinkBadgeTitle", lang);
           const panel = elText("div", text, "st-think-body");
           panel.style.display = "none";
           badge.addEventListener("click", () => {
