@@ -343,7 +343,7 @@ var CSS = `
 .st-box-time{display:block;text-align:right;font-size:9px;opacity:.5;margin-top:3px;font-variant-numeric:tabular-nums}
 @keyframes st-pulse{0%,100%{opacity:.25}50%{opacity:1}}
 .st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto;position:relative}
-.st-mention{position:absolute;left:10px;bottom:calc(100% + 4px);min-width:160px;background:var(--bg2,#262626);border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:20}
+.st-mention{position:absolute;left:10px;bottom:calc(100% + 4px);min-width:160px;background:var(--card,#262626);border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:20}
 .st-mention-item{display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:6px;cursor:pointer;font-size:12.5px}
 .st-mention-item.on{background:rgba(127,127,127,.2)}
 .st-mention-at{opacity:.6}
@@ -354,7 +354,7 @@ var CSS = `
 .st-row.queued .st-bubble{opacity:.45;border:1px dashed rgba(255,255,255,.4)} /* \uB300\uAE30 \uC911 \uC0AC\uB78C \uC785\uB825(\uBBF8\uBC18\uC601) */
 .st-queued-tag{font-weight:400;opacity:.7;font-size:10px;font-style:italic}
 .st-modal{position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:50}
-.st-modal-box{background:var(--bg2,#262626);border:1px solid rgba(127,127,127,.4);border-radius:12px;padding:16px 18px;max-width:300px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+.st-modal-box{background:var(--card,#262626);border:1px solid rgba(127,127,127,.4);border-radius:12px;padding:16px 18px;max-width:300px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
 .st-modal-title{font-weight:700;font-size:13px;margin-bottom:4px}
 .st-modal-msg{font-size:12px;color:var(--fg3,#aaa);margin-bottom:14px;line-height:1.4}
 .st-modal-btns{display:flex;gap:6px;flex-wrap:wrap}
