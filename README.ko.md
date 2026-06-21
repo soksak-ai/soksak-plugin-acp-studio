@@ -3,8 +3,8 @@
 여러 AI 코딩 에이전트(Claude·Codex)를 한 워크스페이스에서 **하나의 대화**로 협업시키는 soksak 플러그인.
 ACP(Agent Client Protocol) 기반, `soksak-plugin-agents-acp`(엔진) 의존.
 
-참여 모델을 체크박스로 선택, 탭 순서로 정렬, 세 가지 대화 모드로 협업해 실파일 작업. 동료 직접 호출은
-본문 `@이름` 한 채널로 단일화한다.
+참여 모델을 체크박스로 선택, 탭 순서로 정렬, 세 가지 대화 모드로 함께 논의한다. 기본은 대화이고, 사용자가
+명시적으로 요청할 때만 실파일 작업으로 들어간다. 동료 직접 호출은 본문 `@이름` 한 채널로 단일화한다.
 
 > Gemini 는 임시 비활성(hidden): gemini-cli 서비스 종료 + antigravity-cli ACP 미구현. 경로 복구 시 부활.
 
@@ -26,8 +26,8 @@ ACP(Agent Client Protocol) 기반, `soksak-plugin-agents-acp`(엔진) 의존.
 
 ## 커맨드(헤드리스·CLI/MCP)
 
-- `send` — 활성 Studio 에 사람 메시지 전송(라이브 구동·참견). `mode` 로 전송 전 모드 전환(E2E).
-- `state` — 활성 Studio 라이브 상태(모드·진행자·대화 수·진행 중 발화의 스트리밍 길이 — 관찰·E2E).
+- `send` — 활성 Clubhouse 에 사람 메시지 전송(라이브 구동·참견). `mode` 로 전송 전 모드 전환(E2E).
+- `state` — 활성 Clubhouse 라이브 상태(모드·진행자·대화 수·진행 중 발화의 스트리밍 길이 — 관찰·E2E).
 - `ask` — 단일 에이전트 1회.
 - `converse` — 다중 에이전트 1교환(각 1회). `agents`는 preset id 또는 `{id,cmd,args}`(E2E 런치).
 
@@ -56,4 +56,4 @@ npm run typecheck && npm run test && npm run build
 | `input` | `input` | 메시지 입력 |
 | `tab` | `tab/<agentId>` | 에이전트 탭(체크·드래그) |
 
-주소 예: `content/view/soksak-plugin-agents-clubhouse.studio/node/send`. `sok ui.tree` 로 현재 노출 노드 확인.
+주소 예: `content/view/soksak-plugin-agents-clubhouse.clubhouse/node/send`. `sok ui.tree` 로 현재 노출 노드 확인.

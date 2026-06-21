@@ -242,10 +242,10 @@ async function driveSimul(opts) {
     })
   );
 }
-function studioBase(speaker, others, place, nameOf2) {
+function clubhouseBase(speaker, others, place, nameOf2) {
   const room = others.length ? `\uB3D9\uB8CC ${others.join(", ")} \uC640(\uACFC) \uB2F9\uC2E0(${nameOf2(speaker)})\uC774 \uD568\uAED8 \uC788\uC2B5\uB2C8\uB2E4.` : `\uC9C0\uAE08\uC740 \uB2F9\uC2E0(${nameOf2(speaker)}) \uD63C\uC790\uC785\uB2C8\uB2E4.`;
   const at = `@${others[0] ?? "\uB3D9\uB8CC"}`;
-  return `\uC5EC\uAE30\uB294 'Studio' \u2014 \uC5EC\uB7EC AI \uCF54\uB529 \uC5D0\uC774\uC804\uD2B8\uAC00 \uD55C \uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uC5D0\uC11C \uC0AC\uC6A9\uC790\uC758 \uC77C\uC744 \uD568\uAED8 \uD558\uB294 \uD611\uC5C5 \uCC44\uD305\uBC29\uC785\uB2C8\uB2E4. ${room}${place}
+  return `\uC5EC\uAE30\uB294 'Clubhouse' \u2014 \uC5EC\uB7EC AI \uCF54\uB529 \uC5D0\uC774\uC804\uD2B8\uAC00 \uD55C \uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uC5D0\uC11C \uC0AC\uC6A9\uC790\uC758 \uC77C\uC744 \uD568\uAED8 \uD558\uB294 \uD611\uC5C5 \uCC44\uD305\uBC29\uC785\uB2C8\uB2E4. ${room}${place}
 \uB2F9\uC2E0\uC740 ${nameOf2(speaker)} \uBCF8\uC778\uC73C\uB85C\uC11C \uC790\uC5F0\uC2A4\uB7FD\uAC8C \uCC38\uC5EC\uD558\uC138\uC694:
 - \uBC29\uAE08 \uB098\uC628 \uB9D0\uC5D0 \uACE7\uBC14\uB85C \uBC18\uC751\uD558\uC138\uC694 \u2014 \uB3D9\uC758\xB7\uBCF4\uCDA9\xB7\uBC18\uB860\xB7\uC9C8\uBB38. \uAE38\uAC8C \uB3C5\uBC31\uD558\uC9C0 \uB9D0\uACE0 \uC9E7\uAC8C \uC8FC\uACE0\uBC1B\uC73C\uC138\uC694.
 - \uC774\uBBF8 \uB098\uC628 \uB9D0\uC740 \uBC18\uBCF5\uD558\uC9C0 \uB9C8\uC138\uC694. \uAC19\uC740 \uACB0\uB860\uC774\uBA74 \uC9E7\uAC8C \uB3D9\uC758\uB9CC \uD558\uACE0, \uB2E4\uB974\uBA74 \uADF8 \uAD00\uC810\uC744 \uBCF4\uD0DC\uC138\uC694.
@@ -261,13 +261,13 @@ function inviteePreamble(speaker, roster, nameOf2, cwd, mode) {
 [\uB3D9\uC2DC] \uC9C0\uAE08\uC740 \uBAA8\uB450\uAC00 \uAC19\uC740 \uC21C\uAC04\uC5D0 \uB2F5\uD569\uB2C8\uB2E4 \u2014 \uC774\uBC88 \uCC28\uB840\uC5D4 \uC11C\uB85C\uC758 \uB2F5\uC744 \uC544\uC9C1 \uBABB \uBD05\uB2C8\uB2E4. \uB418\uB3C4\uB85D \uC0C1\uB300\uC758 \uB9D0\uC744 \uB05D\uAE4C\uC9C0 \uB4E3\uACE0, \uB204\uAD70\uAC00 '@\uC774\uB984'\uC73C\uB85C \uC9C0\uBAA9\uD558\uBA74 \uADF8 \uB3D9\uB8CC\uC758 \uB2F5\uC744 \uAE30\uB2E4\uB824 \uC8FC\uC138\uC694. \uAC15\uC81C\uB294 \uC544\uB2D9\uB2C8\uB2E4 \u2014 \uC790\uC5F0\uC2A4\uB7EC\uC6B0\uBA74 \uADF8\uB300\uB85C \uB2F5\uD558\uC138\uC694.` : mode === "turn" ? `
 [\uC21C\uCC28] \uC9C0\uAE08\uC740 \uCC28\uB840\uB300\uB85C \uD55C \uBA85\uC529 \uB9D0\uD569\uB2C8\uB2E4. \uB2F9\uC2E0 \uCC28\uB840\uC5D0 \uC9E7\uAC8C \uD55C\uB9C8\uB514, \uB0A8\uC758 \uCC28\uB840\uC5D4 \uACBD\uCCAD\uD558\uC138\uC694.` : mode === "facil" ? `
 [\uC9C4\uD589] \uC774 \uBC29\uC740 \uC9C4\uD589\uC790\uAC00 \uD750\uB984\uC744 \uC870\uC728\uD569\uB2C8\uB2E4. \uC9C4\uD589\uC790\uAC00 \uB2F9\uC2E0\uC744 \uBD80\uB974\uBA74(\uB610\uB294 '@\uC774\uB984'\uC73C\uB85C \uC9C0\uBAA9\uD558\uBA74) \uB2F5\uD558\uACE0, \uC548 \uBD88\uB9AC\uBA74 \uB098\uC11C\uC9C0 \uB9D0\uACE0 \uAE30\uB2E4\uB9AC\uC138\uC694.` : "";
-  return studioBase(speaker, others, place, nameOf2) + note;
+  return clubhouseBase(speaker, others, place, nameOf2) + note;
 }
 function facilitatorPreamble(facilitator, roster, nameOf2, cwd) {
   const others = roster.filter((id) => id !== facilitator).map(nameOf2);
   const place = cwd ? ` \uC791\uC5C5 \uB514\uB809\uD130\uB9AC\uB294 ${cwd} \uC785\uB2C8\uB2E4.` : "";
   const ex = others[0] ?? "\uB3D9\uB8CC";
-  return studioBase(facilitator, others, place, nameOf2) + `
+  return clubhouseBase(facilitator, others, place, nameOf2) + `
 [\uC9C4\uD589\uC790] \uB2F9\uC2E0\uC740 \uC774 \uB300\uD654\uC758 \uC9C4\uD589\uC790\uC785\uB2C8\uB2E4. \uC0AC\uB78C\uC740 \uB2F9\uC2E0\uC5D0\uAC8C \uB9D0\uD569\uB2C8\uB2E4.
 - \uC9C1\uC811 \uB2F5\uD558\uAC70\uB098, \uB3D9\uB8CC\uB97C \uB04C\uC5B4\uB4E4\uC5EC \uC870\uC728\uD558\uC138\uC694. \uBD80\uB974\uB294 \uBC95:
    \xB7 \uB2E4 \uAC19\uC774(\uB3D9\uC2DC) \u2014 "\uB2E4 \uAC19\uC774 \uC758\uACAC \uC918\uC694" \uCC98\uB7FC.
@@ -381,10 +381,10 @@ var main_default = {
     const settingDepthCap = () => Math.max(1, Number(app.settings?.get("nameTriggerDepthCap")) || 4);
     const settingFacilMax = () => Math.max(1, Number(app.settings?.get("facilMaxRounds")) || FACIL_MAX_ROUNDS);
     const projectCwd = () => app.project?.current?.()?.root;
-    let activeStudio = null;
+    let activeClubhouse = null;
     ctx.subscriptions.push(
       app.commands.register("send", {
-        description: "Inject a human message into the active Studio view, equivalent to typing and submitting via the textarea. Use to drive or interject a multi-agent conversation programmatically (E2E, automation, AI control).",
+        description: "Inject a human message into the active Clubhouse view, equivalent to typing and submitting via the textarea. Use to drive or interject a multi-agent conversation programmatically (E2E, automation, AI control).",
         triggers: { ko: "\uC2A4\uD29C\uB514\uC624 \uBA54\uC2DC\uC9C0 \uC804\uC1A1 \uB300\uD654 \uC8FC\uC785 \uCC38\uACAC" },
         params: {
           text: { type: "string", required: true, description: "Message text to send." },
@@ -394,23 +394,23 @@ var main_default = {
         handler: async (p) => {
           const text = String(p?.text ?? "").trim();
           if (!text) return { ok: false, error: "text \uD544\uC218" };
-          if (!activeStudio) return { ok: false, error: "\uD65C\uC131 Studio \uBDF0 \uC5C6\uC74C(\uBDF0\uB97C \uBA3C\uC800 \uC5EC\uC138\uC694)" };
+          if (!activeClubhouse) return { ok: false, error: "\uD65C\uC131 Clubhouse \uBDF0 \uC5C6\uC74C(\uBDF0\uB97C \uBA3C\uC800 \uC5EC\uC138\uC694)" };
           if (p?.mode === "turn" || p?.mode === "facil" || p?.mode === "simul") {
-            setMode(activeStudio, p.mode);
+            setMode(activeClubhouse, p.mode);
           }
-          onHuman(activeStudio, text, p?.cut === true);
-          return { ok: true, sent: text, mode: activeStudio.mode, running: activeStudio.running };
+          onHuman(activeClubhouse, text, p?.cut === true);
+          return { ok: true, sent: text, mode: activeClubhouse.mode, running: activeClubhouse.running };
         }
       })
     );
     ctx.subscriptions.push(
       app.commands.register("state", {
-        description: "Return the live state of the active Studio view: conversation mode, running flag, utterance count, roster check states, and streaming length of in-progress agent turns. Use to observe the studio from E2E tests or AI automation.",
+        description: "Return the live state of the active Clubhouse view: conversation mode, running flag, utterance count, roster check states, and streaming length of in-progress agent turns. Use to observe the clubhouse from E2E tests or AI automation.",
         triggers: { ko: "\uC2A4\uD29C\uB514\uC624 \uC0C1\uD0DC \uB300\uD654 \uC9C4\uD589 \uD655\uC778 \uBAA8\uB4DC \uB85C\uC2A4\uD130" },
         params: {},
         handler: async () => {
-          const st = activeStudio;
-          if (!st) return { ok: false, error: "\uD65C\uC131 Studio \uBDF0 \uC5C6\uC74C" };
+          const st = activeClubhouse;
+          if (!st) return { ok: false, error: "\uD65C\uC131 Clubhouse \uBDF0 \uC5C6\uC74C" };
           return {
             ok: true,
             mode: st.mode,
@@ -428,7 +428,7 @@ var main_default = {
     );
     ctx.subscriptions.push(
       app.commands.register("ask", {
-        description: "Send a single prompt to one ACP agent (connect \u2192 new session \u2192 prompt) and return the response text and tool calls. Use for headless single-turn queries without opening the Studio UI.",
+        description: "Send a single prompt to one ACP agent (connect \u2192 new session \u2192 prompt) and return the response text and tool calls. Use for headless single-turn queries without opening the Clubhouse UI.",
         triggers: { ko: "\uC5D0\uC774\uC804\uD2B8 \uB2E8\uC77C \uC9C8\uBB38 \uD504\uB86C\uD504\uD2B8 \uD5E4\uB4DC\uB9AC\uC2A4 \uB2E8\uBC1C" },
         params: {
           agent: { type: "string", description: "Agent preset id: claude | codex | gemini (default: claude)." },
@@ -519,7 +519,7 @@ var main_default = {
     );
     const states = /* @__PURE__ */ new WeakMap();
     ctx.subscriptions.push(
-      app.ui.registerView("studio", {
+      app.ui.registerView("clubhouse", {
         mount(container) {
           teardown(container);
           container.style.position = "relative";
@@ -527,7 +527,7 @@ var main_default = {
           style.textContent = CSS;
           const root = document.createElement("div");
           root.className = "st";
-          buildStudio(container, root);
+          buildClubhouse(container, root);
           container.replaceChildren(style, root);
         },
         unmount(container) {
@@ -538,7 +538,7 @@ var main_default = {
     function teardown(container) {
       const st = states.get(container);
       if (st) {
-        if (st === activeStudio) activeStudio = null;
+        if (st === activeClubhouse) activeClubhouse = null;
         for (const c of st.actives) engine.cancel(c.connId, c.sessionId);
         for (const connId of st.conns.values()) core("disconnect", { connId }).catch(() => {
         });
@@ -547,7 +547,7 @@ var main_default = {
       states.delete(container);
       container.replaceChildren();
     }
-    function buildStudio(container, root) {
+    function buildClubhouse(container, root) {
       const bar = el("div", "st-bar");
       const tabsEl = el("div", "st-tabs");
       const kibEl = el("div", "st-kib");
@@ -581,10 +581,10 @@ var main_default = {
         status
       };
       states.set(container, st);
-      activeStudio = st;
+      activeClubhouse = st;
       buildKibitz(st);
       renderTabs(st, tabsEl);
-      bar.append(elText("b", "Studio"), tabsEl, kibEl, status);
+      bar.append(elText("b", "Clubhouse"), tabsEl, kibEl, status);
       root.append(bar, msgs, inrow);
       const doSend = () => {
         const t2 = ta.value.trim();

@@ -1,6 +1,6 @@
 // soksak-plugin-agents-clubhouse — 여러 AI 코딩 에이전트를 한 워크스페이스에서 하나의 대화로 협업.
 //
-// 한 뷰: Studio(체크박스 로스터·탭 순서 턴제/자유/동시 대화·실파일). 사교(회고·잡담)는 별도 채널이 아니라
+// 한 뷰: Clubhouse(체크박스 로스터·탭 순서 턴제/자유/동시 대화·실파일). 사교(회고·잡담)는 별도 채널이 아니라
 //   대화 자체에 자연스럽게 녹는다(페르소나가 유도) — 동료 직접 호출은 본문 '@이름' 한 채널로 단일화.
 // acp-core(라이브러리) 의존: 연결/세션/프롬프트는 engine 이 코어 커맨드로 호출, session/update 는
 //   app.bus(`acp.update.<connId>`) 라이브 구독. 락인 0 — ACP 표준만.
@@ -116,7 +116,7 @@ interface Current {
   liveRaw: string; // 스트리밍 raw 누적 — dedup + 참견 중단 시 '말해진 부분' 보존(종결처리)
 }
 
-interface StudioState {
+interface ClubhouseState {
   roster: RosterEntry[]; // 탭 순서(드래그로 변경) — 체크된 것이 참여자
   mode: KibitzMode;
   conv: Utterance[];
@@ -158,14 +158,14 @@ export default {
       Math.max(1, Number(app.settings?.get("facilMaxRounds")) || FACIL_MAX_ROUNDS);
     const projectCwd = (): string | undefined => app.project?.current?.()?.root;
 
-    // 활성(마지막 마운트) Studio 뷰 — send 명령이 라이브 대화를 프로그램적으로 구동(노출 command E2E).
-    let activeStudio: StudioState | null = null;
+    // 활성(마지막 마운트) Clubhouse 뷰 — send 명령이 라이브 대화를 프로그램적으로 구동(노출 command E2E).
+    let activeClubhouse: ClubhouseState | null = null;
 
-    // ── send(라이브 Studio 에 사람 메시지 주입 — 노출 command 로만 E2E·자동화 구동) ──
+    // ── send(라이브 Clubhouse 에 사람 메시지 주입 — 노출 command 로만 E2E·자동화 구동) ──
     ctx.subscriptions.push(
       app.commands.register("send", {
         description:
-          "Inject a human message into the active Studio view, equivalent to typing and submitting via the textarea. Use to drive or interject a multi-agent conversation programmatically (E2E, automation, AI control).",
+          "Inject a human message into the active Clubhouse view, equivalent to typing and submitting via the textarea. Use to drive or interject a multi-agent conversation programmatically (E2E, automation, AI control).",
         triggers: { ko: "스튜디오 메시지 전송 대화 주입 참견" },
         params: {
           text: { type: "string", required: true, description: "Message text to send." },
@@ -175,26 +175,26 @@ export default {
         handler: async (p: any) => {
           const text = String(p?.text ?? "").trim();
           if (!text) return { ok: false, error: "text 필수" };
-          if (!activeStudio) return { ok: false, error: "활성 Studio 뷰 없음(뷰를 먼저 여세요)" };
+          if (!activeClubhouse) return { ok: false, error: "활성 Clubhouse 뷰 없음(뷰를 먼저 여세요)" };
           if (p?.mode === "turn" || p?.mode === "facil" || p?.mode === "simul") {
-            setMode(activeStudio, p.mode); // 버튼 클릭과 동치 — 하이라이트·👑 동기화
+            setMode(activeClubhouse, p.mode); // 버튼 클릭과 동치 — 하이라이트·👑 동기화
           }
-          onHuman(activeStudio, text, p?.cut === true);
-          return { ok: true, sent: text, mode: activeStudio.mode, running: activeStudio.running };
+          onHuman(activeClubhouse, text, p?.cut === true);
+          return { ok: true, sent: text, mode: activeClubhouse.mode, running: activeClubhouse.running };
         },
       }),
     );
 
-    // ── state(활성 Studio 라이브 상태 — E2E·자동화 관찰: 스트리밍 시작 시점 폴링 등) ──
+    // ── state(활성 Clubhouse 라이브 상태 — E2E·자동화 관찰: 스트리밍 시작 시점 폴링 등) ──
     ctx.subscriptions.push(
       app.commands.register("state", {
         description:
-          "Return the live state of the active Studio view: conversation mode, running flag, utterance count, roster check states, and streaming length of in-progress agent turns. Use to observe the studio from E2E tests or AI automation.",
+          "Return the live state of the active Clubhouse view: conversation mode, running flag, utterance count, roster check states, and streaming length of in-progress agent turns. Use to observe the clubhouse from E2E tests or AI automation.",
         triggers: { ko: "스튜디오 상태 대화 진행 확인 모드 로스터" },
         params: {},
         handler: async () => {
-          const st = activeStudio;
-          if (!st) return { ok: false, error: "활성 Studio 뷰 없음" };
+          const st = activeClubhouse;
+          if (!st) return { ok: false, error: "활성 Clubhouse 뷰 없음" };
           return {
             ok: true,
             mode: st.mode,
@@ -214,7 +214,7 @@ export default {
     ctx.subscriptions.push(
       app.commands.register("ask", {
         description:
-          "Send a single prompt to one ACP agent (connect → new session → prompt) and return the response text and tool calls. Use for headless single-turn queries without opening the Studio UI.",
+          "Send a single prompt to one ACP agent (connect → new session → prompt) and return the response text and tool calls. Use for headless single-turn queries without opening the Clubhouse UI.",
         triggers: { ko: "에이전트 단일 질문 프롬프트 헤드리스 단발" },
         params: {
           agent: { type: "string", description: "Agent preset id: claude | codex | gemini (default: claude)." },
@@ -316,10 +316,10 @@ export default {
       }),
     );
 
-    // ── Studio 뷰(다중 에이전트 라이브) ──
-    const states = new WeakMap<HTMLElement, StudioState>();
+    // ── Clubhouse 뷰(다중 에이전트 라이브) ──
+    const states = new WeakMap<HTMLElement, ClubhouseState>();
     ctx.subscriptions.push(
-      app.ui.registerView("studio", {
+      app.ui.registerView("clubhouse", {
         mount(container: HTMLElement) {
           teardown(container);
           // 호스트 슬롯에 확정 높이 부여(kanban 패턴) — .st 가 absolute inset:0 로 채워 flex 레이아웃이
@@ -329,7 +329,7 @@ export default {
           style.textContent = CSS;
           const root = document.createElement("div");
           root.className = "st";
-          buildStudio(container, root);
+          buildClubhouse(container, root);
           container.replaceChildren(style, root);
         },
         unmount(container: HTMLElement) {
@@ -341,7 +341,7 @@ export default {
     function teardown(container: HTMLElement) {
       const st = states.get(container);
       if (st) {
-        if (st === activeStudio) activeStudio = null; // send 명령 dangling 참조 방지
+        if (st === activeClubhouse) activeClubhouse = null; // send 명령 dangling 참조 방지
         for (const c of st.actives) engine.cancel(c.connId, c.sessionId); // 진행 중 전부 취소(동시=N)
         for (const connId of st.conns.values()) core("disconnect", { connId }).catch(() => {});
         st.conns.clear();
@@ -350,7 +350,7 @@ export default {
       container.replaceChildren();
     }
 
-    function buildStudio(container: HTMLElement, root: HTMLElement) {
+    function buildClubhouse(container: HTMLElement, root: HTMLElement) {
       const bar = el("div", "st-bar");
       const tabsEl = el("div", "st-tabs");
       const kibEl = el("div", "st-kib");
@@ -368,7 +368,7 @@ export default {
       mentionPop.style.display = "none";
       inrow.append(mentionPop, ta, send);
 
-      const st: StudioState = {
+      const st: ClubhouseState = {
         roster: ACTIVE_AGENTS.map((a) => ({ id: a.id, checked: true })),
         mode: settingMode(),
         conv: [],
@@ -384,11 +384,11 @@ export default {
         status,
       };
       states.set(container, st);
-      activeStudio = st; // 라이브 send 명령의 타겟(마지막 마운트 = 활성)
+      activeClubhouse = st; // 라이브 send 명령의 타겟(마지막 마운트 = 활성)
 
       buildKibitz(st); // 모드 버튼(순차/진행/동시) — 클릭은 setMode 통과
       renderTabs(st, tabsEl);
-      bar.append(elText("b", "Studio"), tabsEl, kibEl, status);
+      bar.append(elText("b", "Clubhouse"), tabsEl, kibEl, status);
       root.append(bar, msgs, inrow);
 
       const doSend = () => {
@@ -487,7 +487,7 @@ export default {
     }
 
     // 모드 변경 단일 경로 — 버튼 클릭·send 명령 모두 여기로. st.mode + 버튼 하이라이트 + 탭(👑) 을 함께 동기화.
-    function setMode(st: StudioState, m: KibitzMode) {
+    function setMode(st: ClubhouseState, m: KibitzMode) {
       st.mode = m;
       for (const c of Array.from(st.kibEl.children) as HTMLElement[]) {
         c.classList.toggle("on", c.dataset.mode === m);
@@ -496,7 +496,7 @@ export default {
     }
 
     // 모드 버튼(순차/진행/동시) — st.kibEl 에 채운다. 클릭은 setMode 통과(하이라이트·👑 동기화).
-    function buildKibitz(st: StudioState) {
+    function buildKibitz(st: ClubhouseState) {
       const mk = (m: KibitzMode, label: string) => {
         const b = document.createElement("button");
         b.type = "button";
@@ -511,7 +511,7 @@ export default {
     }
 
     // 로스터 탭 — 체크박스(참여) + 드래그(순서=턴 순서). 브랜드 색.
-    function renderTabs(st: StudioState, tabsEl: HTMLElement) {
+    function renderTabs(st: ClubhouseState, tabsEl: HTMLElement) {
       tabsEl.replaceChildren();
       st.roster.forEach((entry) => {
         const a = AGENTS.find((x) => x.id === entry.id);
@@ -586,7 +586,7 @@ export default {
       });
     }
 
-    function setStatus(st: StudioState, t: string) {
+    function setStatus(st: ClubhouseState, t: string) {
       st.status.textContent = t;
     }
 
@@ -595,7 +595,7 @@ export default {
     //   끝나면 넣기 = 안 끊고 대기 큐("대기 중" 배지) → 현 흐름 자연 종료 후 주입.
     //   취소 = 전송 안 함(입력 텍스트는 onCancel 로 입력창에 되살림).
     // 진행 중엔 여기서 conv push/render 안 함 — 드라이브가 종결 직후 주입(올바른 순서: 발화 → 사람).
-    function onHuman(st: StudioState, text: string, forceCut?: boolean, onCancel?: () => void) {
+    function onHuman(st: ClubhouseState, text: string, forceCut?: boolean, onCancel?: () => void) {
       if (!st.running) {
         st.conv.push({ who: "human", text });
         renderUser(st, text);
@@ -623,7 +623,7 @@ export default {
     }
 
     // 대기 중 사람 입력을 세션에 주입 — 부분응답 종결 직후 호출(순서: 발화 → 사람). conv push + 렌더.
-    function injectPending(st: StudioState) {
+    function injectPending(st: ClubhouseState) {
       clearQueued(st); // "대기 중" 배지 제거(이제 실제 발화로 들어감)
       clearModal(st); // 잔류 모달 제거(안전)
       for (const t of st.pendingHuman) {
@@ -635,7 +635,7 @@ export default {
 
     // 세션 오류(순단 포함) → 해당 에이전트 자동 체크 해제(roster 드롭). 다음 라운드 참여에서 빠지고, 사람이
     // 탭을 다시 켜서 재소환한다(이상하면 사람이 판단). 이미 꺼져 있으면 no-op.
-    function dropAgent(st: StudioState, agentId: string) {
+    function dropAgent(st: ClubhouseState, agentId: string) {
       const entry = st.roster.find((r) => r.id === agentId);
       if (entry?.checked) {
         entry.checked = false;
@@ -645,7 +645,7 @@ export default {
 
     // 영속 연결 보장(에이전트별 1프로세스 재사용) — 실패 시 사유 반환(조용한 null 금지: 화면에 띄운다).
     async function ensureConn(
-      st: StudioState,
+      st: ClubhouseState,
       agentId: string,
     ): Promise<{ connId: number } | { error: string }> {
       const existing = st.conns.get(agentId);
@@ -659,7 +659,7 @@ export default {
     // 한 발화 — 연결·세션·라이브 스트리밍·버블 확정. 순차/동시 공용. 성공/부분=work 반환(호출자가 conv 에 push).
     // 참견 중단 시 코어가 최종 텍스트를 못 줘도 스트리밍된 부분(liveRaw)을 '말해진 것'으로 종결 보존(취소-제거 아님).
     // 연결/세션/프롬프트 오류(순단 포함)=사유 행 + system 메시지 + 해당 에이전트 자동 체크 해제. 침묵(빈 ok)=흔적 없이.
-    async function runOneTurn(st: StudioState, speaker: string, prompt: string): Promise<string> {
+    async function runOneTurn(st: ClubhouseState, speaker: string, prompt: string): Promise<string> {
       const row = renderTurnRow(st, speaker);
       const fail = (reason: string) => {
         row.fail(reason);
@@ -711,7 +711,7 @@ export default {
 
     // @멘션 해소 — 주 구동 뒤, 새 발화에서 '@이름' 지목을 수집해 그 동료를 발화시킨다(체크 안 된 구경꾼도 깨움).
     // 지목된 발화가 또 누굴 부르면 연쇄. depthCap(설정 nameTriggerDepthCap) 안전판. 참견 들어오면 즉시 양보.
-    async function resolveMentions(st: StudioState, scanFrom: number) {
+    async function resolveMentions(st: ClubhouseState, scanFrom: number) {
       const ids = st.roster.map((x) => x.id);
       let from = scanFrom;
       for (let depth = 0; depth < settingDepthCap(); depth++) {
@@ -742,7 +742,7 @@ export default {
 
     // 순차(turn) 구동 — 탭 순서대로 각 1회(라운드로빈 폐기 — 한 바퀴). 매 발화 전후 참견(pendingHuman) 체크 시
     // 라운드 중단(상위가 사람 입력 주입·재구동). 라운드 중 체크 해제된 에이전트(오류 자동 드롭·수동)는 건너뜀.
-    async function driveSequential(st: StudioState, ids: string[]) {
+    async function driveSequential(st: ClubhouseState, ids: string[]) {
       const parts = participants(st.roster);
       for (const speaker of parts) {
         if (st.pendingHuman.length) return; // 참견 — 라운드 중단
@@ -762,7 +762,7 @@ export default {
     }
 
     // 한 동료 발화 — 진행자가 호출하는 단위(facil). 체크 확인·프롬프트·runOneTurn·conv push.
-    async function facilTurn(st: StudioState, id: string, ids: string[]) {
+    async function facilTurn(st: ClubhouseState, id: string, ids: string[]) {
       if (!st.roster.find((r) => r.id === id)?.checked) return;
       setStatus(st, `${nameOf(id)} 응답 중…`);
       const prompt = buildPrompt({
@@ -778,7 +778,7 @@ export default {
 
     // 진행(facil) 구동 — 진행자가 사람의 단일 창구. 매 LOOP: [진행자 턴] → 지시 파싱 → 동료를 동시/순차/선택으로
     // 호출 → await 완료(=stall) → 진행자 복귀. 지시 없음(none)=마무리 신호 → 종료. 하드 cap(settingFacilMax).
-    async function driveFacilitated(st: StudioState, ids: string[]) {
+    async function driveFacilitated(st: ClubhouseState, ids: string[]) {
       const checked = participants(st.roster);
       if (!checked.length) return;
       // 진행자 = 명시 facilitatorId 가 체크돼 있으면 그것, 아니면 첫 체크.
@@ -829,7 +829,7 @@ export default {
     // @멘션 해소(facil 은 진행자가 조율하므로 별도 @해소 안 함). 참견(pendingHuman)이 들어오면 부분응답 종결 직후
     // 사람 입력을 주입하고 재구동. 참견 없으면 종료(사람 입력 대기).
     // 사람 입력의 @지목 — 트레일링 사람 메시지에서 '@모델'을 모아 체크된 참여자만(중복 제거). 모드 무관 직행 대상.
-    function humanTargets(st: StudioState): string[] {
+    function humanTargets(st: ClubhouseState): string[] {
       const ids = st.roster.map((r) => r.id);
       const checked = new Set(participants(st.roster));
       const targets: string[] = [];
@@ -843,7 +843,7 @@ export default {
     }
 
     // 사람이 @지목 → 그 모델들만 병렬 1회(동시). 모드 무관(진행 모드의 진행자도 우회). 스냅샷 고정 = 서로 안 봄.
-    async function driveTargeted(st: StudioState, ids: string[], targets: string[]) {
+    async function driveTargeted(st: ClubhouseState, ids: string[], targets: string[]) {
       const snapshot = st.conv.slice();
       await Promise.all(
         targets.map(async (id) => {
@@ -861,7 +861,7 @@ export default {
       );
     }
 
-    async function runLoop(st: StudioState) {
+    async function runLoop(st: ClubhouseState) {
       st.running = true;
       const ids = st.roster.map((x) => x.id);
       for (;;) {
@@ -926,7 +926,7 @@ export default {
     }
 
     // ── 렌더 헬퍼 ──
-    function renderUser(st: StudioState, text: string) {
+    function renderUser(st: ClubhouseState, text: string) {
       const row = el("div", "st-row user");
       const who = el("div", "st-who");
       who.append(elText("span", t("whoMe", lang), "st-who-name"), elText("span", ` · ${hhmmss()}`, "st-who-time"));
@@ -936,7 +936,7 @@ export default {
     }
 
     // 대기(wait) 중 사람 입력 — "대기 중" 배지로 미반영 표시(흐릿한 버블). 주입 시 clearQueued 로 제거.
-    function renderQueued(st: StudioState) {
+    function renderQueued(st: ClubhouseState) {
       clearQueued(st);
       const last = st.pendingHuman[st.pendingHuman.length - 1] ?? "";
       const row = el("div", "st-row user queued");
@@ -947,17 +947,17 @@ export default {
       st.msgs.appendChild(row);
       scroll(st);
     }
-    function clearQueued(st: StudioState) {
+    function clearQueued(st: ClubhouseState) {
       st.msgs.querySelectorAll('.st-row.queued[data-queued="1"]').forEach((n) => n.remove());
     }
     // 떠 있는 참견 모달 제거 — 흐름 종료/새 입력 시 잔류 방지(stale 모달이 화면에 남지 않게).
-    function clearModal(st: StudioState) {
+    function clearModal(st: ClubhouseState) {
       st.msgs.parentElement?.querySelectorAll(".st-modal").forEach((n) => n.remove());
     }
 
     // 참견 레이어 알럿(interjectMode=ask) — 뷰 내부 DOM 모달(window.confirm 금지). 진행 중 발화자 이름 표기,
     // [지금 끊기]/[끝나면 넣기]/[취소]. choice 콜백으로 결과 전달. 한 번 선택하면 닫힘.
-    function showInterjectAlert(st: StudioState, who: string, cb: (c: "cut" | "wait" | "cancel") => void) {
+    function showInterjectAlert(st: ClubhouseState, who: string, cb: (c: "cut" | "wait" | "cancel") => void) {
       const root = st.msgs.parentElement ?? st.msgs; // .st 컨테이너
       st.msgs.parentElement?.querySelectorAll(".st-modal").forEach((n) => n.remove()); // 중복 방지
       const back = el("div", "st-modal");
@@ -985,7 +985,7 @@ export default {
     }
     // 턴 행 — 이름 + 본문(처음엔 "응답 중…" 맥동 인디케이터). toBubble()=빈 버블로 교체(스트리밍),
     // fail(reason)=사유 노출(연결/세션/빈응답 실패를 조용히 숨기지 않음), remove()=행 폐기(참견 재시작).
-    function renderTurnRow(st: StudioState, agentId: string) {
+    function renderTurnRow(st: ClubhouseState, agentId: string) {
       const row = el("div", "st-row assistant");
       const who = el("div", "st-who");
       const nameEl = elText("span", nameOf(agentId), "st-who-name");
@@ -1049,7 +1049,7 @@ export default {
         },
       };
     }
-    function scroll(st: StudioState) {
+    function scroll(st: ClubhouseState) {
       st.msgs.scrollTop = st.msgs.scrollHeight;
     }
 

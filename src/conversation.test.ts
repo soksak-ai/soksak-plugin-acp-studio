@@ -313,9 +313,9 @@ describe("driveSimul — 동시(병렬·스냅샷 고정·도착순 push)", () =
 });
 
 describe("inviteePreamble — 방 정체성 + base 결 + 모드별 발언 규범", () => {
-  it("Studio 협업방·cwd·메타금지·독백금지·침묵허용·@이름", () => {
+  it("Clubhouse 협업방·cwd·메타금지·독백금지·침묵허용·@이름", () => {
     const p = inviteePreamble("claude", ["claude", "codex"], nameOf, "/repo");
-    expect(p).toContain("Studio");
+    expect(p).toContain("Clubhouse");
     expect(p).toContain("협업");
     expect(p).toContain("/repo");
     expect(p).toContain("내부 절차"); // 메타 서술 금지
@@ -357,10 +357,9 @@ describe("inviteePreamble — 방 정체성 + base 결 + 모드별 발언 규범
     expect(p).not.toContain("[순차]");
     expect(p).not.toContain("[진행]");
   });
-  it("Clubhouse 잔재 없음", () => {
+  it("회고 잔재 없음(폐기된 retro 컨셉)", () => {
     const p = inviteePreamble("claude", ["claude", "codex"], nameOf, "/repo", "facil");
     expect(p).not.toContain("<회고>");
-    expect(p).not.toContain("Clubhouse");
   });
 });
 

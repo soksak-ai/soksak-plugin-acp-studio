@@ -1,4 +1,4 @@
-// engine — acp-studio 실작업 엔진. lounge orchestrator 에서 흡수한 코어 헬퍼(연결·턴·디스크 검증).
+// engine — agents-clubhouse 실작업 엔진. 코어 헬퍼(연결·턴·디스크 검증).
 // 역할 고정 plan→review→implement 루프는 폐기(H=emergent 확정) — 누가 무엇을 할지는 대화에서 자연 발생.
 // 남긴 것: connect+session(cwd 지정 → 에이전트가 그 디렉터리에서 실파일 작업) · ask(코어 dedup r.text) ·
 // cwd 스냅샷 diff 로 filesWritten 를 디스크 사실로 검증(에이전트 텍스트 주장이 아니라).

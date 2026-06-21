@@ -3,7 +3,7 @@
 A soksak plugin for collaborating with multiple AI coding agents (Claude, Codex) in **a single conversation** within one workspace.
 Based on ACP (Agent Client Protocol); depends on `soksak-plugin-agents-acp` (engine).
 
-Select participating models via checkboxes, order them by tab position, and collaborate across three conversation modes to work on real files. Addressing a peer directly is unified to a single channel: `@name` in the message body.
+Select participating models via checkboxes, order them by tab position, and discuss across three conversation modes. Conversation is the default; the agents touch real files only when you explicitly ask. Addressing a peer directly is unified to a single channel: `@name` in the message body.
 
 > Gemini is temporarily disabled (hidden): gemini-cli service discontinued + antigravity-cli ACP not implemented. Will be restored when the path is recovered.
 
@@ -21,8 +21,8 @@ Typing `@` in the input field opens an autocomplete popup of checked participant
 
 ## Commands (Headless · CLI/MCP)
 
-- `send` — Send a human message to the active Studio (live run · intervention). `mode` switches the mode before sending (E2E).
-- `state` — Live state of the active Studio (mode · facilitator · conversation count · streaming length of the in-progress turn — for observation · E2E).
+- `send` — Send a human message to the active Clubhouse (live run · intervention). `mode` switches the mode before sending (E2E).
+- `state` — Live state of the active Clubhouse (mode · facilitator · conversation count · streaming length of the in-progress turn — for observation · E2E).
 - `ask` — Single agent, single turn.
 - `converse` — Multi-agent, one exchange (one turn each). `agents` accepts a preset id or `{id,cmd,args}` (E2E launch).
 
@@ -49,4 +49,4 @@ DOM nodes exposed to external access (address-based click/measure · E2E) are de
 | `input` | `input` | Message input field |
 | `tab` | `tab/<agentId>` | Agent tab (checkbox · drag) |
 
-Address example: `content/view/soksak-plugin-agents-clubhouse.studio/node/send`. Use `sok ui.tree` to inspect currently exposed nodes.
+Address example: `content/view/soksak-plugin-agents-clubhouse.clubhouse/node/send`. Use `sok ui.tree` to inspect currently exposed nodes.

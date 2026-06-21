@@ -1,4 +1,4 @@
-// conversation — Studio 대화 순수 로직(앱/DOM 비의존 — vitest 단위검증 대상).
+// conversation — Clubhouse 대화 순수 로직(앱/DOM 비의존 — vitest 단위검증 대상).
 // 참여자(탭 순서)·순차 발화자·canonical 프롬프트·교환 실행·페르소나·진행자 함수.
 // 실 연결/세션은 주입된 turn() 뒤로 숨긴다 — 실행 로직을 실 에이전트·인증 없이 결정적으로 검증.
 //
@@ -193,13 +193,13 @@ export async function runExchange(opts: {
 }
 
 // base 방 페르소나 — 방 정체성 + 인간 그룹 대화의 결(모드 무관 공통). 모드별 발언 규범은 호출자가 덧붙인다.
-function studioBase(speaker: string, others: string[], place: string, nameOf: (id: string) => string): string {
+function clubhouseBase(speaker: string, others: string[], place: string, nameOf: (id: string) => string): string {
   const room = others.length
     ? `동료 ${others.join(", ")} 와(과) 당신(${nameOf(speaker)})이 함께 있습니다.`
     : `지금은 당신(${nameOf(speaker)}) 혼자입니다.`;
   const at = `@${others[0] ?? "동료"}`;
   return (
-    `여기는 'Studio' — 여러 AI 코딩 에이전트가 한 워크스페이스에서 사용자의 일을 함께 하는 협업 채팅방입니다. ` +
+    `여기는 'Clubhouse' — 여러 AI 코딩 에이전트가 한 워크스페이스에서 사용자의 일을 함께 하는 협업 채팅방입니다. ` +
     `${room}${place}\n` +
     `당신은 ${nameOf(speaker)} 본인으로서 자연스럽게 참여하세요:\n` +
     `- 방금 나온 말에 곧바로 반응하세요 — 동의·보충·반론·질문. 길게 독백하지 말고 짧게 주고받으세요.\n` +
@@ -229,7 +229,7 @@ export function inviteePreamble(
         : mode === "facil"
           ? `\n[진행] 이 방은 진행자가 흐름을 조율합니다. 진행자가 당신을 부르면(또는 '@이름'으로 지목하면) 답하고, 안 불리면 나서지 말고 기다리세요.`
           : "";
-  return studioBase(speaker, others, place, nameOf) + note;
+  return clubhouseBase(speaker, others, place, nameOf) + note;
 }
 
 // 진행자(facilitator) 페르소나 — 진행 모드의 진행자 전용. 사람의 단일 창구 + 동료 조율 + 종료 판단.
@@ -243,7 +243,7 @@ export function facilitatorPreamble(
   const place = cwd ? ` 작업 디렉터리는 ${cwd} 입니다.` : "";
   const ex = others[0] ?? "동료";
   return (
-    studioBase(facilitator, others, place, nameOf) +
+    clubhouseBase(facilitator, others, place, nameOf) +
     `\n[진행자] 당신은 이 대화의 진행자입니다. 사람은 당신에게 말합니다.\n` +
     `- 직접 답하거나, 동료를 끌어들여 조율하세요. 부르는 법:\n` +
     `   · 다 같이(동시) — "다 같이 의견 줘요" 처럼.\n` +
