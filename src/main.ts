@@ -12,6 +12,7 @@
 
 import { createEngine } from "./engine";
 import { t, tp } from "./i18n";
+import { setupTower } from "./tower/header";
 import {
   buildPrompt,
   detectMentions,
@@ -147,6 +148,11 @@ export default {
         lang = e.language;
       }),
     );
+
+    // ── 컨트롤 타워: 타이틀바 ✦ 액션 + AI-명령 모달(빈 셸, M2) ──
+    // content 탭은 그대로 두고 타이틀바에 아이콘 1개를 추가(additive). 클릭 = 모달 토글.
+    const tower = setupTower(app, t("towerTitle", lang));
+    ctx.subscriptions.push({ dispose: () => tower.dispose() });
 
     const settingPolicy = (): string | undefined =>
       (app.settings?.get("permissionPolicy") as string) || undefined;

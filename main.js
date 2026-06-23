@@ -135,6 +135,10 @@ var strings = {
   whoConversation: {
     en: "Conversation",
     ko: "\uB300\uD654"
+  },
+  towerTitle: {
+    en: "AI Command",
+    ko: "AI \uBA85\uB839"
   }
 };
 function t(key, lang) {
@@ -145,6 +149,163 @@ function tp(key, lang, vars) {
   let s = t(key, lang);
   for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
   return s;
+}
+
+// src/tower/modal.ts
+var STYLE_ID = "tower-modal-style";
+var CSS = `
+.tower-ov{position:fixed;left:50%;top:76px;transform:translateX(-50%);width:560px;max-width:calc(100vw - 32px);
+  z-index:9001;background:var(--card,#262626);color:var(--fg,#e6e6e6);border:1px solid var(--bd,#3a3a3a);
+  border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.45),0 2px 8px rgba(0,0,0,.3);
+  font:13px system-ui,-apple-system,sans-serif;overflow:hidden;display:flex;flex-direction:column}
+.tower-hd{display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid var(--bd,#3a3a3a);
+  cursor:grab;user-select:none;flex:0 0 auto}
+.tower-hd.drag{cursor:grabbing}
+.tower-mk{display:inline-flex;align-items:center;color:var(--acc,#7aa2f7)}
+.tower-tt{font-weight:700;letter-spacing:.01em;flex:1 1 auto;white-space:nowrap}
+.tower-grip{opacity:.4;letter-spacing:2px;font-size:11px;cursor:grab;user-select:none}
+.tower-x{appearance:none;border:0;background:transparent;color:inherit;opacity:.6;cursor:pointer;
+  font-size:15px;line-height:1;padding:3px 6px;border-radius:6px}
+.tower-x:hover{opacity:1;background:var(--inset,rgba(127,127,127,.14))}
+.tower-bd{padding:14px;min-height:96px}
+`;
+var ICON = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .962L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z" /></svg>';
+function ensureStyle() {
+  if (document.getElementById(STYLE_ID)) return;
+  const s = document.createElement("style");
+  s.id = STYLE_ID;
+  s.textContent = CSS;
+  document.head.appendChild(s);
+}
+function makeDraggable(ov, handle) {
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const r = ov.getBoundingClientRect();
+    let nx = ox + (e.clientX - sx);
+    let ny = oy + (e.clientY - sy);
+    nx = Math.max(8, Math.min(nx, window.innerWidth - r.width - 8));
+    ny = Math.max(8, Math.min(ny, window.innerHeight - r.height - 8));
+    ov.style.left = `${nx}px`;
+    ov.style.top = `${ny}px`;
+    ov.style.transform = "none";
+  };
+  const onUp = () => {
+    dragging = false;
+    handle.classList.remove("drag");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+  const onDown = (e) => {
+    if (e.target.closest(".tower-x")) return;
+    const r = ov.getBoundingClientRect();
+    ov.style.left = `${r.left}px`;
+    ov.style.top = `${r.top}px`;
+    ov.style.transform = "none";
+    sx = e.clientX;
+    sy = e.clientY;
+    ox = r.left;
+    oy = r.top;
+    dragging = true;
+    handle.classList.add("drag");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+  handle.addEventListener("pointerdown", onDown);
+  return () => handle.removeEventListener("pointerdown", onDown);
+}
+function createTowerModal(title, onChange) {
+  ensureStyle();
+  let ov = null;
+  let undrag = null;
+  const emit = () => {
+    try {
+      onChange?.();
+    } catch {
+    }
+  };
+  const build = () => {
+    const root = document.createElement("div");
+    root.className = "tower-ov";
+    root.dataset.node = "tower/modal";
+    const hd = document.createElement("div");
+    hd.className = "tower-hd";
+    const mk = document.createElement("span");
+    mk.className = "tower-mk";
+    mk.innerHTML = ICON;
+    const tt = document.createElement("span");
+    tt.className = "tower-tt";
+    tt.textContent = title;
+    const grip = document.createElement("span");
+    grip.className = "tower-grip";
+    grip.textContent = "\u283F";
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "tower-x";
+    x.textContent = "\u2715";
+    x.title = "\uB2EB\uAE30";
+    x.dataset.node = "tower/close";
+    x.addEventListener("click", () => api.close());
+    hd.append(mk, tt, grip, x);
+    const bd = document.createElement("div");
+    bd.className = "tower-bd";
+    bd.dataset.node = "tower/body";
+    root.append(hd, bd);
+    undrag = makeDraggable(root, hd);
+    return root;
+  };
+  const api = {
+    isOpen: () => ov != null,
+    open: () => {
+      if (ov) return;
+      ov = build();
+      document.body.appendChild(ov);
+      emit();
+    },
+    close: () => {
+      if (!ov) return;
+      undrag?.();
+      undrag = null;
+      ov.remove();
+      ov = null;
+      emit();
+    },
+    toggle: () => ov ? api.close() : api.open(),
+    // dispose — 액션 해지 중 호출되므로 onChange 재렌더를 일으키지 않는다(누수 방지).
+    dispose: () => {
+      undrag?.();
+      undrag = null;
+      ov?.remove();
+      ov = null;
+    }
+  };
+  return api;
+}
+
+// src/tower/header.ts
+var SPARKLE_ICON = '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .962L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z" />';
+function setupTower(app, label) {
+  const modal = createTowerModal(label, () => render());
+  let unregister = null;
+  const render = () => {
+    unregister = app.ui.registerHeaderAction({
+      id: "tower",
+      label,
+      // 아이콘 폴백
+      icon: SPARKLE_ICON,
+      title: label,
+      active: modal.isOpen(),
+      onClick: () => modal.toggle()
+      // active 갱신은 onChange → render 가 담당
+    });
+  };
+  render();
+  return {
+    dispose: () => {
+      unregister?.();
+      modal.dispose();
+    }
+  };
 }
 
 // src/conversation.ts
@@ -305,7 +466,7 @@ var NAME = { claude: "Claude", codex: "Codex", gemini: "Gemini" };
 var COLOR = Object.fromEntries(AGENTS.map((a) => [a.id, a.color]));
 var nameOf = (id) => NAME[id] ?? id;
 var FACIL_MAX_ROUNDS = 6;
-var CSS = `
+var CSS2 = `
 .st{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg,#1e1e1e);color:var(--fg,#ddd);font:13px system-ui,-apple-system,sans-serif;overflow:hidden}
 .st-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid rgba(127,127,127,.2);flex:0 0 auto;flex-wrap:nowrap;min-width:0}
 .st-bar b{font-weight:700;letter-spacing:.02em;flex:0 0 auto;white-space:nowrap}
@@ -375,6 +536,8 @@ var main_default = {
         lang = e.language;
       })
     );
+    const tower = setupTower(app, t("towerTitle", lang));
+    ctx.subscriptions.push({ dispose: () => tower.dispose() });
     const settingPolicy = () => app.settings?.get("permissionPolicy") || void 0;
     const settingMode = () => {
       const v = app.settings?.get("kibitzDefault");
@@ -526,7 +689,7 @@ var main_default = {
           teardown(container);
           container.style.position = "relative";
           const style = document.createElement("style");
-          style.textContent = CSS;
+          style.textContent = CSS2;
           const root = document.createElement("div");
           root.className = "st";
           buildClubhouse(container, root);

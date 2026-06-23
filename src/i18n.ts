@@ -90,6 +90,10 @@ const strings = {
     en: "Conversation",
     ko: "대화",
   },
+  towerTitle: {
+    en: "AI Command",
+    ko: "AI 명령",
+  },
 } as const;
 
 export type I18nKey = keyof typeof strings;
