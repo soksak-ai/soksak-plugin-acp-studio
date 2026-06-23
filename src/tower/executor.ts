@@ -25,7 +25,8 @@ import {
   type DomainMap,
 } from "./plan";
 import { distributePlans, type DistMode, type PlanFor, type AgentPlan } from "./distribute";
-import { deriveStatus, type TraceSink, type PlanMeta, type PlanTrace, type PlanOutcome } from "./trace";
+import { deriveStatus, type TraceSink, type PlanMeta, type PlanTrace, type PlanOutcome, type RollbackRecord } from "./trace";
+import { planRollback, type RollbackSnapshot } from "./rollback";
 
 export interface CommandOutcome {
   ok: boolean;
@@ -47,15 +48,31 @@ export interface StepResult {
 
 // commit 결과 — 전체 ok + step별 기록(results). 첫 실패에서 멈추되, 그때까지의 results 는 보존.
 //   yielded = 사람 인터럽트(pendingHuman)로 중간 양보됨 — 부분 실행 보존(취소-폐기 아님).
+//   rollback(M9) = destructive/inject 묶음이 중간 실패해 한정 rollback 이 돌았으면 그 정직 결과
+//   (무엇을 되돌렸고 무엇을 못 되돌렸는지). 실패가 아니거나 되돌릴 게 없으면 undefined.
 export interface CommitResult extends CommandOutcome {
   results?: StepResult[];
   yielded?: boolean;
+  rollback?: RollbackResult;
+}
+
+// rollback 결과(M9, 정직) — restored = 실제 inverse 가 디스패치된 step + 그 결과(되돌림). unrestorable =
+//   inverse 가 없어 되돌릴 수 없던 실행분(가짜 복원 0, RULE 2). reason = 묶음을 실패시킨 원인(어느 step·에러).
+export interface RollbackResult {
+  reason: { code?: string; message?: string; step?: PlanStep };
+  restored: Array<{ step: PlanStep; result: CommandOutcome }>;
+  unrestorable: PlanStep[];
 }
 
 // commit 옵션 — 사람 인터럽트 협조 양보(M6). shouldYield() 가 true 면 다음 step 으로 넘어가기 전에 멈춘다
 //   (현재 step 은 이미 종결, 그때까지의 results 보존). 라이브에선 main.ts 가 () => st.pendingHuman.length>0 주입.
 export interface CommitOptions {
   shouldYield?: () => boolean;
+  // 헤드리스 E2E 전용 — 이 commit 동안 danger confirm 을 DOM 모달 대신 자동 거부(deny)한다(M9 rollback 검증).
+  //   ⚠️ "deny" 만 허용 — 자동 accept(headless 로 destructive 승인)는 보안 구멍이라 절대 제공 안 한다. deny 는
+  //   안전 방향(미실행) — destructive step 이 결정적으로 실패해 그 앞 invertible step 의 rollback 을 구동한다.
+  //   라이브 사람 사용엔 무관(미주입). 노출 command tower.plan(autoConfirm:"deny")만 이 경로를 쓴다(RULE 4).
+  autoDenyConfirm?: boolean;
 }
 
 // dry-run 결과(실행 0). 검증 통과 시 steps + commit() 반환. commit() 호출 시에만 디스패치(사람 ⏎).
@@ -234,6 +251,35 @@ function resolveGoalReached(
   return !!goalOut.ok;
 }
 
+// state.tree 를 재귀로 훑어 모든 split node 의 { id → 현재 child sizes } 를 모은다(M9 스냅샷, 순수).
+//   코어 layout 의 split 노드는 { id, sizes:[...] } 형태(panel.resize 의 splitId·sizes 와 동일 키). sizes 가
+//   number[] 인 split 만 담는다(추측 금지). 어떤 키 위치든(split/children/배열) 탐색해 누락 0.
+function collectSplitSizes(node: any, out: Record<string, number[]>): void {
+  if (!node || typeof node !== "object") return;
+  if (typeof node.id === "string" && Array.isArray(node.sizes) && node.sizes.every((n: any) => typeof n === "number")) {
+    out[node.id] = node.sizes.slice();
+  }
+  if (node.split) collectSplitSizes(node.split, out);
+  if (Array.isArray(node.children)) for (const c of node.children) collectSplitSizes(c, out);
+  for (const v of Object.values(node)) {
+    if (v && typeof v === "object" && v !== node.split) collectSplitSizes(v, out);
+  }
+}
+
+// RollbackResult(executor 내부 PlanStep 보존) → RollbackRecord(trace 영속 형태, 가벼운 평면화). 정직:
+//   restored 는 실제 디스패치된 inverse + 결과(ok/code), unrestorable 은 되돌릴 수 없던 원본 step 만(가짜 0).
+function toRollbackRecord(rb: RollbackResult): RollbackRecord {
+  return {
+    reason: {
+      code: rb.reason.code,
+      message: rb.reason.message,
+      step: rb.reason.step ? { axis: rb.reason.step.axis, name: rb.reason.step.name } : undefined,
+    },
+    restored: rb.restored.map((x) => ({ axis: x.step.axis, name: x.step.name, ok: x.result.ok, code: x.result.code })),
+    unrestorable: rb.unrestorable.map((s) => ({ axis: s.axis, name: s.name })),
+  };
+}
+
 export interface TowerExecutor {
   runExample: (index: number) => Promise<CommandOutcome>;
   runCommand: (name: string, params?: Record<string, unknown>) => Promise<CommandOutcome>;
@@ -241,6 +287,11 @@ export interface TowerExecutor {
   runPlan: (steps: PlanStep[]) => Promise<CommandOutcome>;
   // slow-path(M5) — 모호 NL → 도메인맵 라이브 주입 planning 턴 → 검증 → dry-run(실행 0) + commit().
   planAndRun: (nl: string, opts?: PlanRunOptions) => Promise<PlanRunResult>;
+  // 편집된 preview plan 재검증 + dry-run(M9) — 사람이 dry-run preview 의 step 을 편집(삭제·reorder·param)한
+  //   뒤 그 *편집된* plan 을 라이브 도메인맵으로 다시 validatePlan 한다(편집이 검증을 우회하지 못함). 성공 시
+  //   실행 0 의 새 dry-run(steps + commit)을 돌려준다 — commit 은 편집된 plan 을 디스패치(원본 아님). 미등록
+  //   command/주소를 들여놓는 편집은 거부(UNKNOWN_COMMAND/NOT_EXPOSED). commit 은 rollback 보호를 포함한다.
+  revalidateAndRun: (steps: PlanStep[], opts?: PlanRunOptions) => Promise<PlanRunResult>;
   // 다중 에이전트 분배(M6) — 모호 NL → 모드별(facil split / turn 체인 / simul 병렬) 다중 plan → 각 검증
   //   → 단일 dry-run(실행 0) + commit(). danger step 의 confirm 은 직렬 큐로 한 번에 하나만(simul 안전).
   distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
@@ -295,12 +346,22 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
     return exec(entry.name, entry.params);
   }
 
+  // 헤드리스 E2E 자동-거부 깊이(M9) — autoDenyConfirm 인 dispatchPlan 동안 >0. gatedRun 이 이 동안 DOM
+  //   confirm 을 호출하지 않고 곧장 거부한다(destructive 결정적 실패 → rollback 구동). ⚠️ deny 만 — 자동
+  //   accept 경로는 존재조차 안 한다(보안). 깊이 카운터라 중첩 dispatch(rollback inverse 등)에도 정확.
+  let autoDenyDepth = 0;
+
   // danger command 게이트 통과 → 실행. confirm 이 토큰 발급(issue)하면서 게이트 엔트리에 name/params 봉인.
   async function gatedRun(
     name: string,
     params: Record<string, unknown>,
     danger: "destructive" | "inject",
   ): Promise<CommandOutcome> {
+    // 헤드리스 자동-거부 — DOM confirm 을 띄우지 않고 즉시 거부(미실행). 토큰 미발급이라 sealedDispatch 도
+    //   구성 불가(데이터 의존 그대로). 자동 accept 는 없다 — destructive 는 사람 confirm 없이 절대 실행 안 됨.
+    if (autoDenyDepth > 0) {
+      return { ok: false, code: "CONFIRM_DENIED", message: "헤드리스 자동 거부(autoConfirm:deny) — 위험 명령 미실행" };
+    }
     const issue = (): string => {
       const token = randomToken();
       gates.set(token, { name, params }); // 수락 순간에만 실행 데이터가 존재.
@@ -383,14 +444,87 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
     };
   }
 
+  // 한 plan 이 한정 rollback 보호 대상인가 — destructive/inject command step 을 하나라도 포함하면 묶음
+  //   중간 실패 시 복원할 가치가 있다(M9). dom(클릭=inject) 도 묶음으로 보지만 inverse 는 invertibleStep 이
+  //   command 만 되돌린다(dom 일반 inverse 불가). status(read)만으로 이뤄진 plan 은 보호 불필요(부수효과 0).
+  function isProtectedBatch(steps: PlanStep[]): boolean {
+    return steps.some((s) => stepDanger(s) !== undefined);
+  }
+
+  // rollback 스냅샷 캡처(M9) — destructive/inject 묶음 *디스패치 직전* 의 복원 기준값. 이전 테마/모드(theme.list)
+  //   + split 별 이전 sizes(state.tree/panel.list)를 read 로 잡는다(부수효과 0, 폴링 0 — 1회 캡처). 캡처 실패는
+  //   삼켜져 빈 스냅샷이 되고, 그러면 invertibleStep 이 추측 복원 대신 null 을 돌려준다(정직 — 가짜 복원 0).
+  async function captureSnapshot(): Promise<RollbackSnapshot> {
+    const snap: RollbackSnapshot = {};
+    try {
+      const th: any = await exec("theme.list");
+      if (th && typeof th.current === "string") {
+        snap.theme = { name: th.current };
+        if (typeof th.mode === "string") snap.theme.mode = th.mode;
+      }
+    } catch {
+      /* 테마 캡처 실패 → theme inverse 는 추측 금지(null). */
+    }
+    try {
+      const tree: any = await exec("state.tree");
+      const sizes: Record<string, number[]> = {};
+      collectSplitSizes(tree?.tree, sizes); // state.tree 의 모든 split.id → 현재 sizes.
+      if (Object.keys(sizes).length) snap.sizes = sizes;
+    } catch {
+      /* 레이아웃 캡처 실패 → resize inverse 는 추측 금지(null). */
+    }
+    return snap;
+  }
+
+  // 한정 rollback 실행(M9, 정직) — 묶음이 중간 실패했을 때 *성공적으로 실행된* command step 들만 되돌린다.
+  //   planRollback(순수)이 invertible/unrestorable 로 분리 → invertible 만 inverse 를 dispatchStep 으로 실제
+  //   디스패치(안전한 이전 상태 복원 = 비파괴라 게이트 0, 만약 danger 면 dispatchStep 의 게이트가 잡는다 —
+  //   이중 방어, silent destructive inverse 0). restored = 실제 디스패치된 inverse + 결과, unrestorable =
+  //   inverse 없는 실행분(가짜 복원 0). reason = 묶음 실패 원인. cap = 현재 plan 1건(이 호출의 results 만).
+  async function runRollback(
+    executedOk: PlanStep[],
+    snap: RollbackSnapshot,
+    reason: { code?: string; message?: string; step?: PlanStep },
+  ): Promise<RollbackResult> {
+    const { inverse, unrestorable } = planRollback(executedOk, snap);
+    const restored: Array<{ step: PlanStep; result: CommandOutcome }> = [];
+    for (const inv of inverse) {
+      // 안전한 이전 상태 복원만 inverse 에 들어 있다(planRollback.safeInverse). dispatchStep 으로 실행 —
+      //   비파괴면 게이트 0, danger 면 게이트가 잡는다(이중 방어). 결과를 그대로 보고(정직).
+      const r = await dispatchStep(inv);
+      restored.push({ step: inv, result: r });
+    }
+    return { reason, restored, unrestorable };
+  }
+
   // plan 디스패치(step별, 첫 실패에서 멈춤) — 각 step 결과를 results 에 기록(피드백). status step 결과는
   //   보존돼 다음 step·다음 턴 컨텍스트로 흐른다(verify, not poll). danger step 은 confirm 게이트 경유.
   //   인터럽트(shouldYield): 다음 step 진입 전 사람 참견(pendingHuman)이 있으면 양보 — 현재까지 실행한
   //   step 결과(results)는 보존하고 yielded:true 로 멈춘다(취소-폐기 아님, Clubhouse 참견 모델 동형).
   //   tr(M7): 주입된 PlanTrace 가 있으면 각 step 을 실행 직후 그 순간(이벤트)에 영속한다 — 폴링 0. plan 종결
   //   (commit/yield/실패)은 호출자가 tr.finish 로 기록(outcome 분류). trace 미주입이면 기록 0(순수 동작).
+  //   rollback(M9): destructive/inject 묶음이면 디스패치 직전 스냅샷을 잡고, 묶음 중간 step 이 실패하면 그때까지
+  //   *성공한* step 들을 한정 rollback 한다(invertible 만 복원, non-invertible 은 unrestorable 정직 보고). cap =
+  //   이 호출의 results 만(현재 plan 1건 — 무한 undo 0). rollback 기록은 tr.recordRollback 으로 감사에 남긴다.
   async function dispatchPlan(steps: PlanStep[], opts: CommitOptions = {}, tr?: PlanTrace): Promise<CommitResult> {
+    if (opts.autoDenyConfirm) {
+      // 헤드리스 자동-거부 스코프 진입 — 이 dispatch 동안 danger confirm 은 DOM 없이 즉시 거부(deny). finally
+      //   에서 반드시 복원(중첩/예외 안전). rollback inverse 는 비파괴라 영향 0(deny 는 destructive 에만 작동).
+      autoDenyDepth++;
+      try {
+        return await dispatchPlanInner(steps, opts, tr);
+      } finally {
+        autoDenyDepth--;
+      }
+    }
+    return dispatchPlanInner(steps, opts, tr);
+  }
+
+  async function dispatchPlanInner(steps: PlanStep[], opts: CommitOptions = {}, tr?: PlanTrace): Promise<CommitResult> {
     const results: StepResult[] = [];
+    // 묶음이 보호 대상이면 디스패치 직전 스냅샷 1회 캡처(이벤트-우선, 폴링 0). 비보호면 캡처조차 안 함(비용 0).
+    const protectedBatch = isProtectedBatch(steps);
+    const snap: RollbackSnapshot = protectedBatch ? await captureSnapshot() : {};
     for (const s of steps) {
       // step 진입 전 협조 양보 — 부분 실행 보존하고 멈춘다(현재 step 은 시작 안 함, 앞 step 들은 보존).
       if (opts.shouldYield?.()) return { ok: true, yielded: true, results };
@@ -399,7 +533,22 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
       // 이벤트-우선 trace — step 실행 결과를 그 자리에서 기록(danger 분류·status 파생 포함). 영속 실패는
       //   recordStep 내부에서 삼켜져 실행을 막지 않는다(부수효과). danger 거부도 여기 한 번에 남는다.
       if (tr) await tr.recordStep({ step: s, outcome: r, danger: stepDanger(s), status: deriveStatus(r) });
-      if (!r.ok) return { ok: false, code: r.code, message: r.message, results };
+      if (!r.ok) {
+        // 묶음 중간 실패 — 보호 대상이면 그때까지 *성공한* step 들을 한정 rollback(현재 plan 1건 cap).
+        //   실패한 s 자체는 executedOk 에서 제외(미완 — 되돌릴 것도 없음). 정직: invertible 만 restored,
+        //   non-invertible 은 unrestorable(가짜 복원 0, RULE 2).
+        if (protectedBatch) {
+          const executedOk = results.filter((x) => x.result.ok).map((x) => x.step);
+          // 되돌릴 대상(성공적으로 실행된 command step)이 있을 때만 rollback 한다. 아무 step 도 실행되지
+          //   않았으면(예: 첫 destructive 가 confirm 거부) 되돌릴 게 없다 — rollback 필드 생략(빈 잡음 0).
+          if (executedOk.some((st) => st.axis === "command")) {
+            const rollback = await runRollback(executedOk, snap, { code: r.code, message: r.message, step: s });
+            if (tr) await tr.recordRollback(toRollbackRecord(rollback));
+            return { ok: false, code: r.code, message: r.message, results, rollback };
+          }
+        }
+        return { ok: false, code: r.code, message: r.message, results };
+      }
     }
     return { ok: true, results };
   }
@@ -499,6 +648,20 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
       return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
     }
     return { ok: false, ...lastErr };
+  }
+
+  // 편집된 preview plan 재검증 + dry-run(M9) — 사람이 dry-run preview 의 step 을 편집(삭제·reorder·param)한
+  //   뒤 modal 이 *편집된* plan 을 넘긴다. 라이브 도메인맵으로 다시 validatePlan(단일 진실 — 편집이 검증을
+  //   우회하지 못함). 통과 시 실행 0 의 새 dry-run(steps + commit) 반환 — commit 은 편집된 plan 을 디스패치
+  //   (원본 아님). 미등록 command/주소를 들여놓는 편집은 거부(UNKNOWN_COMMAND/NOT_EXPOSED). injectPlan 의
+  //   검증·trace 경로와 동일(보안 우회 0). commit 은 dispatchPlan 의 rollback 보호를 그대로 포함한다.
+  async function revalidateAndRun(steps: PlanStep[], opts: PlanRunOptions = {}): Promise<PlanRunResult> {
+    const map = await fetchDomainMap();
+    const v = validatePlan(steps, planContextFromDomain(map));
+    if (!v.ok) return { ok: false, code: v.code, message: v.message, steps };
+    const frozen = steps;
+    const tw = withTrace(frozen, opts.trace);
+    return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
   }
 
   // 다중 에이전트 분배 오케스트레이션(M6) — 모드별로 planning 턴을 여러 에이전트에 나누고(distribute.ts),
@@ -703,7 +866,7 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
     };
   }
 
-  const api: TowerExecutor = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun, reflectAndRun };
+  const api: TowerExecutor = { runExample, runCommand, runDom, runPlan, planAndRun, revalidateAndRun, distributeAndRun, reflectAndRun };
   // 적대 테스트 전용 봉인 통로 — gatedRun 분기를 우회해 토큰만으로 sealedDispatch 를 직접 호출(NOP 공격
   //   동형). 데이터 의존이라 위조/소비 토큰 → 게이트 엔트리 부재 → 0 실행을 단언한다(검증을 지워도 막힘).
   Object.defineProperty(api, SEALED, { value: sealedDispatch, enumerable: false });

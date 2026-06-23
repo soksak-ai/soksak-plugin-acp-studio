@@ -51,6 +51,7 @@ export interface TracePlan {
   createdAt: number;
   outcome: PlanOutcome | "running";
   finishedAt?: number;
+  rollback?: RollbackRecord; // M9 — 묶음 실패로 한정 rollback 이 돌았으면 그 정직 기록(restored/unrestorable).
 }
 
 // 영속된 step 레코드(조회 결과 형태).
@@ -84,11 +85,24 @@ export interface StepRecord {
   status: StepStatus;
 }
 
+// rollback 기록(M9) — destructive/inject 묶음이 중간 실패해 한정 rollback 이 돌았을 때 무엇을 되돌렸고
+//   무엇을 못 되돌렸는지 정직하게 남긴다(감사). restored = 실제 inverse 가 디스패치된 step(되돌림 성공),
+//   unrestorable = inverse 가 없어 되돌릴 수 없던 step(가짜 복원 0, RULE 2). 한 plan 에 0..1 회(현재 plan
+//   1건 cap). reason = 무엇이 묶음을 실패시켰는지(어느 step·그 에러).
+export interface RollbackRecord {
+  reason: { code?: string; message?: string; step?: { axis: string; name: string } }; // 묶음 실패 원인.
+  restored: Array<{ axis: string; name: string; ok: boolean; code?: string }>; // 실제 디스패치된 inverse + 그 결과.
+  unrestorable: Array<{ axis: string; name: string }>; // inverse 없는 실행분(정직 보고).
+}
+
 // 한 plan 의 라이브 trace 핸들 — executor 가 이 핸들로 step 을 누적하고 종결한다(이벤트-우선).
 export interface PlanTrace {
   planId: string;
   // step 실행 직후 1건 기록(seq 자동 증가). 실패해도 던지지 않는다(영속 실패가 실행을 막으면 안 됨 — 부수효과).
   recordStep: (rec: StepRecord) => Promise<void>;
+  // rollback 1건 기록(M9) — 묶음 실패로 한정 rollback 이 돈 직후. restored/unrestorable 를 정직하게 남긴다.
+  //   plan 레코드에 rollback 필드로 합쳐 저장(plan 1 : rollback 0..1). 영속 실패는 삼킨다(부수효과).
+  recordRollback: (rec: RollbackRecord) => Promise<void>;
   // plan 종결 — 최종 outcome 갱신. committed/discarded/yielded/failed.
   finish: (outcome: PlanOutcome) => Promise<void>;
 }
@@ -156,6 +170,7 @@ export function createTrace(data: DataApi, opts: TraceOptions): TraceSink {
     if (meta.agent !== undefined) doc.agent = meta.agent;
     const planId = await data.put(PLANS, doc);
     let seq = 0;
+    let rollback: RollbackRecord | undefined; // M9 — 묶음 실패 시 1회 채워짐(현재 plan 1건 cap). finish 가 함께 영속.
 
     const recordStep = async (rec: StepRecord): Promise<void> => {
       const s = rec.step;
@@ -180,15 +195,26 @@ export function createTrace(data: DataApi, opts: TraceOptions): TraceSink {
       }
     };
 
+    const recordRollback = async (rec: RollbackRecord): Promise<void> => {
+      rollback = rec; // 현재 plan 1건만(cap). finish 가 plan 레코드에 합쳐 영속한다.
+      try {
+        await data.put(PLANS, { ...doc, rollback }, { id: planId });
+      } catch {
+        // 영속 실패가 실행/복원을 막지 않는다(부수효과) — trace 누락만(가용성 우선).
+      }
+    };
+
     const finish = async (outcome: PlanOutcome): Promise<void> => {
       try {
-        await data.put(PLANS, { ...doc, outcome, finishedAt: now() }, { id: planId });
+        const fin: Record<string, unknown> = { ...doc, outcome, finishedAt: now() };
+        if (rollback) fin.rollback = rollback; // M9 — rollback 기록을 종결 갱신에도 보존.
+        await data.put(PLANS, fin, { id: planId });
       } catch {
         /* 종결 갱신 실패는 무해 — running 으로 남아도 step 으로 사후 판별 가능 */
       }
     };
 
-    return { planId, recordStep, finish };
+    return { planId, recordStep, recordRollback, finish };
   }
 
   async function recentPlans(o: { limit?: number } = {}): Promise<TracePlan[]> {

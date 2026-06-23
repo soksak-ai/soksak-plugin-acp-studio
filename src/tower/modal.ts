@@ -33,6 +33,7 @@ import {
   type ReflectOptions,
 } from "./executor";
 import { EXAMPLE_COMMANDS, type PlanStep } from "./plan";
+import { deleteStep, moveStep, editParams } from "./editplan";
 import type { TraceSink } from "./trace";
 
 // 라이브칸이 구독하는 stable bus 토픽 — Clubhouse 런타임(main.ts)이 스트림 단일 진실에서 재방송한다.
@@ -106,6 +107,20 @@ const CSS = `
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tower-pstep-dg{flex:0 0 auto;color:var(--danger-soft,#d77);font-size:11px}
 .tower-pstep-go{flex:0 0 auto;font-size:11px;color:var(--fg3,#888)}
+/* M9 — 편집 가능 preview: step별 delete/up/down + 인라인 params 편집(전수 data-node 노출, RULE 8) */
+.tower-pstep{flex-wrap:wrap}
+.tower-pstep-ed{flex:0 0 auto;display:flex;align-items:center;gap:3px}
+.tower-pstep-eb{appearance:none;border:1px solid var(--bd,#3a3a3a);background:transparent;color:var(--fg3,#999);
+  font:inherit;font-size:11px;line-height:16px;cursor:pointer;border-radius:5px;width:20px;height:20px;
+  display:inline-flex;align-items:center;justify-content:center;padding:0}
+.tower-pstep-eb:hover{border-color:var(--acc,#7aa2f7);color:var(--acc,#7aa2f7);background:var(--accbg,rgba(122,162,247,.12))}
+.tower-pstep-eb.del:hover{border-color:var(--danger-soft,#d77);color:var(--danger-soft,#e66);background:var(--danger-bg,rgba(220,90,90,.14))}
+.tower-pstep-eb:disabled{opacity:.32;cursor:default}
+.tower-pstep-pin{flex:1 1 100%;order:9;min-width:0;margin-top:3px;appearance:none;font:inherit;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:inherit;
+  background:var(--card,rgba(0,0,0,.18));border:1px solid var(--bd,#3a3a3a);border-radius:6px;padding:4px 7px}
+.tower-pstep-pin:focus{outline:none;border-color:var(--acc,#7aa2f7)}
+.tower-pstep-pin.bad{border-color:var(--danger-soft,#d77)}
 .tower-plan-act{display:flex;justify-content:flex-end;gap:7px;margin-top:2px}
 .tower-plan-btn{appearance:none;border:1px solid var(--bd,#3a3a3a);background:transparent;color:inherit;font:inherit;
   font-size:11.5px;cursor:pointer;border-radius:7px;padding:4px 11px}
@@ -212,6 +227,9 @@ export interface TowerModal {
   dispose: () => void;
   // 헤드리스 slow-path 구동(노출 command·E2E) — executor.planAndRun 직통. 모달 open 비의존(executor 상주).
   planAndRun: (nl: string, opts?: PlanRunOptions) => Promise<PlanRunResult>;
+  // 편집된 plan 재검증 + dry-run(M9) — executor.revalidateAndRun 직통. 편집(삭제·reorder·param)된 plan 을
+  //   다시 validatePlan(편집 검증 우회 0) → dry-run + commit(편집된 plan 디스패치, rollback 보호). 헤드리스 E2E.
+  revalidateAndRun: (steps: PlanStep[], opts?: PlanRunOptions) => Promise<PlanRunResult>;
   // 다중 에이전트 분배(M6) — 모드별(facil/turn/simul) 다중 plan → 단일 dry-run + commit. danger confirm 직렬 큐.
   distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
   // post-execution reflection 루프(M8) — executor.reflectAndRun 직통. 디스패치→verify→실패 되먹임→재계획,
@@ -311,6 +329,8 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
   let nlInput: HTMLInputElement | null = null;
   let planBox: HTMLElement | null = null; // dry-run plan 미리보기 슬롯(NL 바 아래, 예시행 위)
   let planning = false; // slow-path 진행 중 — 중복 Enter 차단(직렬)
+  let planNl = ""; // 현재 편집 중 preview 의 원 NL(편집 재검증 trace 메타·재렌더용)
+  let planSteps: PlanStep[] = []; // 현재 preview 의 last-valid step(편집 거부 시 되돌릴 기준, M9)
   let catalog: CatalogCmd[] = [];
   let liveActive: { who?: string; color?: string; text: HTMLElement } | null = null;
 
@@ -473,8 +493,8 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
     await runSlowPath(raw);
   }
 
-  // slow-path 단일 경로 — planAndRun(라이브 또는 주입) → 성공 시 dry-run preview 렌더, 실패 시 사유 표시.
-  //   opts.injectPlan 주입 시 라이브 LLM 우회(결정적 E2E) — 검증·게이트는 동일. UI 진입점·헤드리스 공용.
+  // slow-path 단일 경로 — planAndRun(라이브 또는 주입) → 성공 시 *편집 가능* dry-run preview 렌더, 실패 시 사유
+  //   표시. opts.injectPlan 주입 시 라이브 LLM 우회(결정적 E2E) — 검증·게이트는 동일. UI 진입점·헤드리스 공용.
   async function runSlowPath(raw: string, opts?: PlanRunOptions): Promise<PlanRunResult> {
     planning = true;
     renderPlanBusy(tr("towerPlanning"));
@@ -493,8 +513,41 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
       onLive({ kind: "end", text: tr(key) });
       return res;
     }
+    // 편집 가능 preview — 초기 검증 통과 step 을 last-valid 로 두고 편집 가능하게 렌더(M9).
+    planNl = raw;
+    planSteps = res.steps;
     renderPlanPreview(raw, res.steps, res.commit);
     return res;
+  }
+
+  // 편집 후 재검증·재렌더(M9, 이벤트-우선 RULE 7) — 사람이 step 을 편집하면(삭제·reorder·param) *편집된* plan 을
+  //   executor.revalidateAndRun 으로 다시 validatePlan(편집이 검증 우회 0). 통과 → last-valid 갱신 + 편집 가능
+  //   preview 재렌더(commit 은 편집된 plan 에 bind). 거부(미등록 command/주소) → 직전 last-valid 로 되돌려 렌더
+  //   + 거부 사유 표시(잘못된 편집이 commit 대상이 되지 않는다). trace 메타는 초기 plan 과 동일.
+  async function reRenderEdited(nextSteps: PlanStep[]): Promise<void> {
+    const meta = { nl: planNl, mode: activeMode() };
+    let res: PlanRunResult;
+    try {
+      res = await executor.revalidateAndRun(nextSteps, { trace: meta });
+    } catch (e) {
+      res = { ok: false, code: "PLAN_EXCEPTION", message: String((e as Error)?.message ?? e) };
+    }
+    if (!res.ok) {
+      // 편집 거부 — last-valid 로 되돌려 렌더하고 사유를 라이브칸·input 에 표시(잘못된 편집은 commit 불가).
+      onLive({ kind: "start", who: "✦" });
+      onLive({ kind: "end", text: tr("towerPlanInvalidEdit") });
+      const back = await executor.revalidateAndRun(planSteps, { trace: meta });
+      if (back.ok) renderPlanPreview(planNl, back.steps, back.commit, tr("towerPlanInvalidEdit"));
+      return;
+    }
+    planSteps = res.steps; // 편집 통과 → last-valid 갱신.
+    renderPlanPreview(planNl, res.steps, res.commit);
+  }
+
+  // 현재 대화 모드(trace 메타) — 모달은 활성 뷰 모드를 모르므로 host 가 planner 와 함께 주입 안 한 경우 "solo".
+  //   main.ts 의 헤드리스 경로(tower.plan)는 자체 trace 메타를 쓰므로 여기 값은 UI-편집 재검증 trace 에만 쓰인다.
+  function activeMode(): string {
+    return "solo";
   }
 
   // dry-run 진행/실패 메시지(plan 슬롯) — busy 표시. error=true 면 톤만 구분.
@@ -507,11 +560,21 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
 
   function clearPlanPreview(): void {
     if (planBox) planBox.replaceChildren();
+    planNl = "";
+    planSteps = [];
   }
 
-  // dry-run plan 미리보기 — 검증된 step 을 행으로(예시행 룩). 각 행 data-node 전수 노출(RULE 8). 실행 0.
-  //   [계획 실행 ⏎] = commit() 디스패치(danger step 은 executor 의 confirm 게이트 경유). [버리기] = 폐기.
-  function renderPlanPreview(nl: string, steps: PlanStep[], commit: () => Promise<{ ok: boolean; code?: string }>): void {
+  // dry-run plan 미리보기 — 검증된 step 을 *편집 가능한* 행으로(M9). 각 행·각 컨트롤 data-node 전수 노출
+  //   (RULE 8). 실행 0. 각 step 행: [axis][라벨][⚠ danger][↑ up][↓ down][✕ delete] + 인라인 params(JSON) input.
+  //   편집(삭제·reorder·param) = editplan 순수 연산 → reRenderEdited(재검증·재렌더, 이벤트-우선 RULE 7).
+  //   [계획 실행 ⏎] = commit() — *편집된* plan 디스패치(danger step 은 executor confirm 게이트, rollback 보호).
+  //   [버리기] = 폐기. note(있으면) = 직전 편집이 거부됐다는 사유 표시.
+  function renderPlanPreview(
+    nl: string,
+    steps: PlanStep[],
+    commit: () => Promise<{ ok: boolean; code?: string; rollback?: any }>,
+    note?: string,
+  ): void {
     const box = planBox;
     if (!box) return;
     box.replaceChildren();
@@ -519,6 +582,7 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
     const hd = el("div", "tower-plan-hd");
     hd.append(elText("span", "✦", ""), elText("span", tr("towerPlanTitle"), ""), el("span", "sp"));
     wrap.appendChild(hd);
+    if (note) wrap.appendChild(elText("div", note, "tower-plan-busy"));
 
     const stepsBox = el("div", "tower-plan-steps");
     steps.forEach((s, i) => {
@@ -530,7 +594,63 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
       tx.title = label;
       row.append(tx);
       if (s.axis !== "dom" && cmdDanger(s.name)) row.append(elText("span", "⚠", "tower-pstep-dg"));
-      row.append(elText("span", "⏎", "tower-pstep-go"));
+
+      // 편집 컨트롤 — up/down/delete. 전수 data-node 노출(RULE 8), AI/E2E 가 ui.input.click 으로 조작 가능.
+      const ed = el("div", "tower-pstep-ed");
+      const up = el("button", "tower-pstep-eb");
+      (up as HTMLButtonElement).type = "button";
+      up.textContent = "↑";
+      up.title = tr("towerPlanStepUp");
+      up.dataset.node = `tower/plan/step/${i}/up`; // RULE 8
+      (up as HTMLButtonElement).disabled = i === 0;
+      up.addEventListener("click", () => void reRenderEdited(moveStep(steps, i, "up")));
+      const down = el("button", "tower-pstep-eb");
+      (down as HTMLButtonElement).type = "button";
+      down.textContent = "↓";
+      down.title = tr("towerPlanStepDown");
+      down.dataset.node = `tower/plan/step/${i}/down`; // RULE 8
+      (down as HTMLButtonElement).disabled = i === steps.length - 1;
+      down.addEventListener("click", () => void reRenderEdited(moveStep(steps, i, "down")));
+      const del = el("button", "tower-pstep-eb del");
+      (del as HTMLButtonElement).type = "button";
+      del.textContent = "✕";
+      del.title = tr("towerPlanStepDelete");
+      del.dataset.node = `tower/plan/step/${i}/delete`; // RULE 8
+      del.addEventListener("click", () => void reRenderEdited(deleteStep(steps, i)));
+      ed.append(up, down, del);
+      row.append(ed);
+
+      // 인라인 params 편집 — dom 은 {address}, 그 외는 step.params 의 JSON. 변경 시 editParams → 재검증.
+      const pin = document.createElement("input");
+      pin.type = "text";
+      pin.className = "tower-pstep-pin";
+      pin.value = s.axis === "dom" ? JSON.stringify({ address: s.address ?? "" }) : JSON.stringify(s.params ?? {});
+      pin.spellcheck = false;
+      pin.dataset.node = `tower/plan/step/${i}/params`; // RULE 8 — 인라인 파라미터 필드 노출
+      pin.title = tr("towerPlanStepParams");
+      const commitParam = () => {
+        let parsed: Record<string, unknown>;
+        try {
+          const v = JSON.parse(pin.value);
+          if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("not-object");
+          parsed = v as Record<string, unknown>;
+        } catch {
+          pin.classList.add("bad"); // 잘못된 JSON — 이전 값 유지(편집 미반영).
+          onLive({ kind: "start", who: "✦" });
+          onLive({ kind: "end", text: tr("towerPlanBadJson") });
+          return;
+        }
+        void reRenderEdited(editParams(steps, i, parsed));
+      };
+      pin.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitParam();
+        }
+      });
+      pin.addEventListener("change", commitParam);
+      row.append(pin);
+
       stepsBox.appendChild(row);
     });
     wrap.appendChild(stepsBox);
@@ -716,6 +836,8 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
     isOpen: () => ov != null,
     // 헤드리스 slow-path — executor 단일 실행점 직통(모달 open 비의존). dry-run 반환(실행 0), commit() 별도.
     planAndRun: (nl: string, opts?: PlanRunOptions) => executor.planAndRun(nl, opts),
+    // 편집된 plan 재검증 + dry-run(M9) — executor 직통. 편집 검증 우회 0, commit 은 편집된 plan + rollback 보호.
+    revalidateAndRun: (steps: PlanStep[], opts?: PlanRunOptions) => executor.revalidateAndRun(steps, opts),
     // 다중 에이전트 분배(M6) — executor.distributeAndRun 직통. 모드별 planFor 는 main.ts 가 주입.
     distributeAndRun: (nl: string, opts: DistRunOptions) => executor.distributeAndRun(nl, opts),
     // reflection 루프(M8) — executor.reflectAndRun 직통(모달 open 비의존, executor 상주). danger 게이트 매 step.

@@ -20,6 +20,8 @@ export interface TowerHandle {
   dispose: () => void;
   // 헤드리스 slow-path 구동(노출 command·E2E) — 모달의 executor.planAndRun 직통.
   planAndRun: (nl: string, opts?: PlanRunOptions) => Promise<PlanRunResult>;
+  // 편집된 plan 재검증 + dry-run(M9) — 모달의 executor.revalidateAndRun 직통(편집 검증 우회 0, rollback 보호).
+  revalidateAndRun: (steps: PlanStep[], opts?: PlanRunOptions) => Promise<PlanRunResult>;
   // 다중 에이전트 분배(M6) — 모달의 executor.distributeAndRun 직통.
   distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
   // post-execution reflection 루프(M8) — 모달의 executor.reflectAndRun 직통.
@@ -55,6 +57,7 @@ export function setupTower(app: any, label: string, lang: () => string, planner?
 
   return {
     planAndRun: (nl: string, opts?: PlanRunOptions) => modal.planAndRun(nl, opts),
+    revalidateAndRun: (steps: PlanStep[], opts?: PlanRunOptions) => modal.revalidateAndRun(steps, opts),
     distributeAndRun: (nl: string, opts: DistRunOptions) => modal.distributeAndRun(nl, opts),
     reflectAndRun: (nl: string, opts?: ReflectOptions) => modal.reflectAndRun(nl, opts),
     previewInject: (nl: string, steps: PlanStep[]) => modal.previewInject(nl, steps),

@@ -43,6 +43,13 @@ function fakeApp(over: Record<string, (p: any) => any> = {}) {
         if (name === "status.query") {
           return { ok: true, statuses: [{ viewId: "v9", code: "idle" }] };
         }
+        // M9 rollback 스냅샷 read fixture — theme.list/state.tree 도 read(부수효과 0). executed 에 안 든다.
+        if (name === "theme.list") {
+          return { ok: true, current: "Cupertino", mode: "dark", themes: [{ name: "Cupertino" }, { name: "Midnight" }] };
+        }
+        if (name === "state.tree") {
+          return { ok: true, tree: { split: { id: "s1", sizes: [0.5, 0.5] } } };
+        }
         executed.push({ name, params });
         return { ok: true };
       }),

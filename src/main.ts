@@ -15,6 +15,7 @@ import { t, tp } from "./i18n";
 import { setupTower } from "./tower/header";
 import { TOWER_LIVE_TOPIC, type TowerLiveEvent } from "./tower/modal";
 import { createTrace, type DataApi, type TraceSink, type TracePlan, type TraceStep } from "./tower/trace";
+import { deleteStep, moveStep, editParams } from "./tower/editplan";
 import {
   buildPrompt,
   detectMentions,
@@ -286,6 +287,16 @@ export default {
             type: "boolean",
             description: "true = render the dry-run preview in the tower modal UI (opens it if closed) for visual snapshot verification. Requires plan injection.",
           },
+          edit: {
+            type: "array",
+            description:
+              "M9 editable dry-run preview: an ordered list of edit ops applied to the injected plan BEFORE commit, each {op:\"delete\"|\"up\"|\"down\"|\"params\", index:N, params?:{...}}. The EDITED plan is re-validated via validatePlan (an edit introducing an unknown command/address is rejected) and is what commit dispatches — never the original. Requires plan injection.",
+          },
+          autoConfirm: {
+            type: "string",
+            description:
+              "M9 headless rollback verification only: \"deny\" auto-denies the desktop confirm for danger steps during this commit (deterministic — no human click). Auto-deny is the SAFE direction (destructive never runs); there is NO auto-accept (accepting destructive headlessly is forbidden). Use to drive a destructive batch whose danger step deterministically fails, triggering the limited rollback of the already-executed invertible steps.",
+          },
           distribute: {
             type: "boolean",
             description:
@@ -295,7 +306,25 @@ export default {
         handler: async (p: any) => {
           const text = String(p?.text ?? "").trim();
           if (!text) return { ok: false, error: "text 필수" };
-          const inject = Array.isArray(p?.plan) ? (p.plan as any[]) : undefined;
+          let inject = Array.isArray(p?.plan) ? (p.plan as any[]) : undefined;
+          // M9 — edit ops(삭제·reorder·params)를 주입 plan 에 적용한 뒤 *편집된* plan 으로 진행한다. 순수
+          //   editplan 연산 → 편집된 plan 은 아래 revalidateAndRun 이 다시 validatePlan(편집 검증 우회 0).
+          const edits = Array.isArray(p?.edit) ? (p.edit as any[]) : undefined;
+          if (edits && inject) {
+            let steps = inject as any[];
+            for (const e of edits) {
+              const idx = Number(e?.index);
+              if (!Number.isInteger(idx)) continue;
+              if (e?.op === "delete") steps = deleteStep(steps as any, idx) as any[];
+              else if (e?.op === "up") steps = moveStep(steps as any, idx, "up") as any[];
+              else if (e?.op === "down") steps = moveStep(steps as any, idx, "down") as any[];
+              else if (e?.op === "params" && e?.params && typeof e.params === "object")
+                steps = editParams(steps as any, idx, e.params as Record<string, unknown>) as any[];
+            }
+            inject = steps;
+          }
+          // M9 — autoConfirm:"deny" 면 commit 동안 danger confirm 자동 거부(헤드리스 rollback 검증). deny 만.
+          const autoDeny = p?.autoConfirm === "deny";
           // render:true + 주입 plan → 모달 UI 에 dry-run preview 렌더(시각 E2E). 실행 0.
           if (p?.render === true && inject) {
             const r = await tower.previewInject(text, inject as any);
@@ -305,6 +334,16 @@ export default {
           // 인터럽트 협조 양보 — commit 도중 사람 참견(pendingHuman)이 들어오면 다음 step/plan 전에 멈춘다
           //   (현재까지 실행 보존, 취소-폐기 아님). 활성 뷰 없으면 항상 false(헤드리스 단발).
           const shouldYield = () => (activeClubhouse?.pendingHuman.length ?? 0) > 0;
+          // M9 — 편집된 plan(또는 주입 plan)을 revalidateAndRun 으로 재검증→dry-run. 편집이 미등록을 들여놓으면
+          //   여기서 거부(UNKNOWN_COMMAND/NOT_EXPOSED) — 편집이 검증을 우회하지 못함. commit 은 편집된 plan.
+          if (edits && inject) {
+            const traceMeta = { nl: text, mode: activeClubhouse?.mode ?? "solo" };
+            const res = await tower.revalidateAndRun(inject as any, { trace: traceMeta });
+            if (!res.ok) return { ok: false, code: res.code, message: res.message };
+            if (p?.commit !== true) return { ok: true, dryRun: true, edited: true, steps: res.steps };
+            const c = await res.commit({ shouldYield, autoDenyConfirm: autoDeny });
+            return { ok: c.ok, committed: true, edited: true, code: c.code, steps: res.steps, results: c.results, yielded: c.yielded, rollback: c.rollback };
+          }
           // distribute:true → 다중 에이전트 분배(M6). 모드는 활성 뷰에서. 주입 plan 은 simul 단일경로라 무시.
           if (p?.distribute === true) {
             const opts = distOptions();
@@ -324,8 +363,9 @@ export default {
           // dry-run 결과 — 검증된 step(축/이름/주소/파라미터) 그대로 노출(투명). 아직 실행 0.
           const steps = res.steps;
           if (p?.commit !== true) return { ok: true, dryRun: true, steps };
-          const c = await res.commit({ shouldYield });
-          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded };
+          const c = await res.commit({ shouldYield, autoDenyConfirm: autoDeny });
+          // rollback(M9) — destructive 묶음 중간 실패 시 한정 rollback 결과(restored/unrestorable)를 투명 노출.
+          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded, rollback: c.rollback };
         },
       }),
     );

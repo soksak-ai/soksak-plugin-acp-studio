@@ -186,6 +186,30 @@ const strings = {
     en: "Plan executed.",
     ko: "계획 실행 완료.",
   },
+  towerPlanStepDelete: {
+    en: "Delete step",
+    ko: "단계 삭제",
+  },
+  towerPlanStepUp: {
+    en: "Move up",
+    ko: "위로",
+  },
+  towerPlanStepDown: {
+    en: "Move down",
+    ko: "아래로",
+  },
+  towerPlanStepParams: {
+    en: "Edit params (JSON)",
+    ko: "파라미터 수정 (JSON)",
+  },
+  towerPlanInvalidEdit: {
+    en: "Edit rejected — unknown command or address.",
+    ko: "편집 거부 — 미등록 command 또는 주소.",
+  },
+  towerPlanBadJson: {
+    en: "Invalid JSON params — kept previous value.",
+    ko: "잘못된 JSON 파라미터 — 이전 값 유지.",
+  },
 } as const;
 
 export type I18nKey = keyof typeof strings;

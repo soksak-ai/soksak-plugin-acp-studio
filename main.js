@@ -241,6 +241,30 @@ var strings = {
   towerPlanDone: {
     en: "Plan executed.",
     ko: "\uACC4\uD68D \uC2E4\uD589 \uC644\uB8CC."
+  },
+  towerPlanStepDelete: {
+    en: "Delete step",
+    ko: "\uB2E8\uACC4 \uC0AD\uC81C"
+  },
+  towerPlanStepUp: {
+    en: "Move up",
+    ko: "\uC704\uB85C"
+  },
+  towerPlanStepDown: {
+    en: "Move down",
+    ko: "\uC544\uB798\uB85C"
+  },
+  towerPlanStepParams: {
+    en: "Edit params (JSON)",
+    ko: "\uD30C\uB77C\uBBF8\uD130 \uC218\uC815 (JSON)"
+  },
+  towerPlanInvalidEdit: {
+    en: "Edit rejected \u2014 unknown command or address.",
+    ko: "\uD3B8\uC9D1 \uAC70\uBD80 \u2014 \uBBF8\uB4F1\uB85D command \uB610\uB294 \uC8FC\uC18C."
+  },
+  towerPlanBadJson: {
+    en: "Invalid JSON params \u2014 kept previous value.",
+    ko: "\uC798\uBABB\uB41C JSON \uD30C\uB77C\uBBF8\uD130 \u2014 \uC774\uC804 \uAC12 \uC720\uC9C0."
   }
 };
 function t(key, lang) {
@@ -583,6 +607,7 @@ function createTrace(data, opts) {
     if (meta.agent !== void 0) doc.agent = meta.agent;
     const planId = await data.put(PLANS, doc);
     let seq = 0;
+    let rollback;
     const recordStep = async (rec) => {
       const s = rec.step;
       const stepDoc = {
@@ -604,13 +629,22 @@ function createTrace(data, opts) {
       } catch {
       }
     };
-    const finish = async (outcome) => {
+    const recordRollback = async (rec) => {
+      rollback = rec;
       try {
-        await data.put(PLANS, { ...doc, outcome, finishedAt: now() }, { id: planId });
+        await data.put(PLANS, { ...doc, rollback }, { id: planId });
       } catch {
       }
     };
-    return { planId, recordStep, finish };
+    const finish = async (outcome) => {
+      try {
+        const fin = { ...doc, outcome, finishedAt: now() };
+        if (rollback) fin.rollback = rollback;
+        await data.put(PLANS, fin, { id: planId });
+      } catch {
+      }
+    };
+    return { planId, recordStep, recordRollback, finish };
   }
   async function recentPlans(o = {}) {
     await ensureDefined();
@@ -633,6 +667,47 @@ function createTrace(data, opts) {
     return rows;
   }
   return { sessionId, begin, recentPlans, stepsOf };
+}
+
+// src/tower/rollback.ts
+function isPureToggle(name) {
+  return name.endsWith(".toggle") && classifyDanger(name) === void 0;
+}
+function invertibleStep(step, snap) {
+  if (step.axis !== "command") return null;
+  const name = step.name;
+  if (name === "theme.apply") {
+    if (!snap.theme?.name) return null;
+    const params = { name: snap.theme.name };
+    if (snap.theme.mode) params.mode = snap.theme.mode;
+    return safeInverse({ axis: "command", name: "theme.apply", params });
+  }
+  if (name === "panel.resize" || name === "panel.equalize") {
+    const split = step.params?.split;
+    if (typeof split !== "string") return null;
+    const prev = snap.sizes?.[split];
+    if (!Array.isArray(prev) || !prev.length) return null;
+    return safeInverse({ axis: "command", name: "panel.resize", params: { split, sizes: prev } });
+  }
+  if (isPureToggle(name)) {
+    return safeInverse({ axis: "command", name, params: { ...step.params ?? {} } });
+  }
+  return null;
+}
+function safeInverse(inv) {
+  return classifyDanger(inv.name) === void 0 ? inv : null;
+}
+function planRollback(executed, snap) {
+  const inverse = [];
+  const unrestorable = [];
+  for (let i = executed.length - 1; i >= 0; i--) {
+    const s = executed[i];
+    if (s.axis !== "command") continue;
+    const inv = invertibleStep(s, snap);
+    if (inv) inverse.push(inv);
+    else unrestorable.push(s);
+  }
+  return { inverse, unrestorable };
 }
 
 // src/tower/executor.ts
@@ -669,6 +744,28 @@ function resolveGoalReached(goalOut, opts) {
   }
   return !!goalOut.ok;
 }
+function collectSplitSizes(node, out) {
+  if (!node || typeof node !== "object") return;
+  if (typeof node.id === "string" && Array.isArray(node.sizes) && node.sizes.every((n) => typeof n === "number")) {
+    out[node.id] = node.sizes.slice();
+  }
+  if (node.split) collectSplitSizes(node.split, out);
+  if (Array.isArray(node.children)) for (const c of node.children) collectSplitSizes(c, out);
+  for (const v of Object.values(node)) {
+    if (v && typeof v === "object" && v !== node.split) collectSplitSizes(v, out);
+  }
+}
+function toRollbackRecord(rb) {
+  return {
+    reason: {
+      code: rb.reason.code,
+      message: rb.reason.message,
+      step: rb.reason.step ? { axis: rb.reason.step.axis, name: rb.reason.step.name } : void 0
+    },
+    restored: rb.restored.map((x) => ({ axis: x.step.axis, name: x.step.name, ok: x.result.ok, code: x.result.code })),
+    unrestorable: rb.unrestorable.map((s) => ({ axis: s.axis, name: s.name }))
+  };
+}
 var SEALED = Symbol("tower.executor.sealed");
 function createExecutor(deps) {
   const { app, confirmGate } = deps;
@@ -691,7 +788,11 @@ function createExecutor(deps) {
     gates.delete(token);
     return exec(entry.name, entry.params);
   }
+  let autoDenyDepth = 0;
   async function gatedRun(name, params, danger) {
+    if (autoDenyDepth > 0) {
+      return { ok: false, code: "CONFIRM_DENIED", message: "\uD5E4\uB4DC\uB9AC\uC2A4 \uC790\uB3D9 \uAC70\uBD80(autoConfirm:deny) \u2014 \uC704\uD5D8 \uBA85\uB839 \uBBF8\uC2E4\uD589" };
+    }
     const issue = () => {
       const token2 = randomToken();
       gates.set(token2, { name, params });
@@ -753,14 +854,68 @@ function createExecutor(deps) {
       statuses: Array.isArray(st?.statuses) ? st.statuses : []
     };
   }
+  function isProtectedBatch(steps) {
+    return steps.some((s) => stepDanger(s) !== void 0);
+  }
+  async function captureSnapshot() {
+    const snap = {};
+    try {
+      const th = await exec("theme.list");
+      if (th && typeof th.current === "string") {
+        snap.theme = { name: th.current };
+        if (typeof th.mode === "string") snap.theme.mode = th.mode;
+      }
+    } catch {
+    }
+    try {
+      const tree = await exec("state.tree");
+      const sizes = {};
+      collectSplitSizes(tree?.tree, sizes);
+      if (Object.keys(sizes).length) snap.sizes = sizes;
+    } catch {
+    }
+    return snap;
+  }
+  async function runRollback(executedOk, snap, reason) {
+    const { inverse, unrestorable } = planRollback(executedOk, snap);
+    const restored = [];
+    for (const inv of inverse) {
+      const r = await dispatchStep(inv);
+      restored.push({ step: inv, result: r });
+    }
+    return { reason, restored, unrestorable };
+  }
   async function dispatchPlan(steps, opts = {}, tr) {
+    if (opts.autoDenyConfirm) {
+      autoDenyDepth++;
+      try {
+        return await dispatchPlanInner(steps, opts, tr);
+      } finally {
+        autoDenyDepth--;
+      }
+    }
+    return dispatchPlanInner(steps, opts, tr);
+  }
+  async function dispatchPlanInner(steps, opts = {}, tr) {
     const results = [];
+    const protectedBatch = isProtectedBatch(steps);
+    const snap = protectedBatch ? await captureSnapshot() : {};
     for (const s of steps) {
       if (opts.shouldYield?.()) return { ok: true, yielded: true, results };
       const r = await dispatchStep(s);
       results.push({ step: s, result: r });
       if (tr) await tr.recordStep({ step: s, outcome: r, danger: stepDanger(s), status: deriveStatus(r) });
-      if (!r.ok) return { ok: false, code: r.code, message: r.message, results };
+      if (!r.ok) {
+        if (protectedBatch) {
+          const executedOk = results.filter((x) => x.result.ok).map((x) => x.step);
+          if (executedOk.some((st) => st.axis === "command")) {
+            const rollback = await runRollback(executedOk, snap, { code: r.code, message: r.message, step: s });
+            if (tr) await tr.recordRollback(toRollbackRecord(rollback));
+            return { ok: false, code: r.code, message: r.message, results, rollback };
+          }
+        }
+        return { ok: false, code: r.code, message: r.message, results };
+      }
     }
     return { ok: true, results };
   }
@@ -841,6 +996,14 @@ function createExecutor(deps) {
       return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
     }
     return { ok: false, ...lastErr };
+  }
+  async function revalidateAndRun(steps, opts = {}) {
+    const map = await fetchDomainMap();
+    const v = validatePlan(steps, planContextFromDomain(map));
+    if (!v.ok) return { ok: false, code: v.code, message: v.message, steps };
+    const frozen = steps;
+    const tw = withTrace(frozen, opts.trace);
+    return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
   }
   async function distributeAndRun(nl, opts) {
     const map = await fetchDomainMap();
@@ -991,9 +1154,45 @@ function createExecutor(deps) {
       escalation: { reason: ESCALATION_REASON, lastFailure }
     };
   }
-  const api = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun, reflectAndRun };
+  const api = { runExample, runCommand, runDom, runPlan, planAndRun, revalidateAndRun, distributeAndRun, reflectAndRun };
   Object.defineProperty(api, SEALED, { value: sealedDispatch, enumerable: false });
   return api;
+}
+
+// src/tower/editplan.ts
+function cloneStep(s) {
+  return { ...s, ...s.params ? { params: { ...s.params } } : {} };
+}
+function copy(steps) {
+  return steps.map(cloneStep);
+}
+function deleteStep(steps, index) {
+  const out = copy(steps);
+  if (index < 0 || index >= out.length) return out;
+  out.splice(index, 1);
+  return out;
+}
+function moveStep(steps, index, dir) {
+  const out = copy(steps);
+  if (index < 0 || index >= out.length) return out;
+  const target = dir === "up" ? index - 1 : index + 1;
+  if (target < 0 || target >= out.length) return out;
+  const tmp = out[index];
+  out[index] = out[target];
+  out[target] = tmp;
+  return out;
+}
+function editParams(steps, index, params) {
+  const out = copy(steps);
+  if (index < 0 || index >= out.length) return out;
+  const s = out[index];
+  const next = { ...params };
+  if (s.axis === "dom" && typeof next.address === "string") {
+    s.address = next.address;
+    delete next.address;
+  }
+  s.params = next;
+  return out;
 }
 
 // src/tower/modal.ts
@@ -1054,6 +1253,20 @@ var CSS = `
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tower-pstep-dg{flex:0 0 auto;color:var(--danger-soft,#d77);font-size:11px}
 .tower-pstep-go{flex:0 0 auto;font-size:11px;color:var(--fg3,#888)}
+/* M9 \u2014 \uD3B8\uC9D1 \uAC00\uB2A5 preview: step\uBCC4 delete/up/down + \uC778\uB77C\uC778 params \uD3B8\uC9D1(\uC804\uC218 data-node \uB178\uCD9C, RULE 8) */
+.tower-pstep{flex-wrap:wrap}
+.tower-pstep-ed{flex:0 0 auto;display:flex;align-items:center;gap:3px}
+.tower-pstep-eb{appearance:none;border:1px solid var(--bd,#3a3a3a);background:transparent;color:var(--fg3,#999);
+  font:inherit;font-size:11px;line-height:16px;cursor:pointer;border-radius:5px;width:20px;height:20px;
+  display:inline-flex;align-items:center;justify-content:center;padding:0}
+.tower-pstep-eb:hover{border-color:var(--acc,#7aa2f7);color:var(--acc,#7aa2f7);background:var(--accbg,rgba(122,162,247,.12))}
+.tower-pstep-eb.del:hover{border-color:var(--danger-soft,#d77);color:var(--danger-soft,#e66);background:var(--danger-bg,rgba(220,90,90,.14))}
+.tower-pstep-eb:disabled{opacity:.32;cursor:default}
+.tower-pstep-pin{flex:1 1 100%;order:9;min-width:0;margin-top:3px;appearance:none;font:inherit;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:inherit;
+  background:var(--card,rgba(0,0,0,.18));border:1px solid var(--bd,#3a3a3a);border-radius:6px;padding:4px 7px}
+.tower-pstep-pin:focus{outline:none;border-color:var(--acc,#7aa2f7)}
+.tower-pstep-pin.bad{border-color:var(--danger-soft,#d77)}
 .tower-plan-act{display:flex;justify-content:flex-end;gap:7px;margin-top:2px}
 .tower-plan-btn{appearance:none;border:1px solid var(--bd,#3a3a3a);background:transparent;color:inherit;font:inherit;
   font-size:11.5px;cursor:pointer;border-radius:7px;padding:4px 11px}
@@ -1203,6 +1416,8 @@ function createTowerModal(deps) {
   let nlInput = null;
   let planBox = null;
   let planning = false;
+  let planNl = "";
+  let planSteps = [];
   let catalog = [];
   let liveActive = null;
   const tr = (key) => t(key, lang());
@@ -1348,8 +1563,31 @@ function createTowerModal(deps) {
       onLive({ kind: "end", text: tr(key) });
       return res;
     }
+    planNl = raw;
+    planSteps = res.steps;
     renderPlanPreview(raw, res.steps, res.commit);
     return res;
+  }
+  async function reRenderEdited(nextSteps) {
+    const meta = { nl: planNl, mode: activeMode() };
+    let res;
+    try {
+      res = await executor.revalidateAndRun(nextSteps, { trace: meta });
+    } catch (e) {
+      res = { ok: false, code: "PLAN_EXCEPTION", message: String(e?.message ?? e) };
+    }
+    if (!res.ok) {
+      onLive({ kind: "start", who: "\u2726" });
+      onLive({ kind: "end", text: tr("towerPlanInvalidEdit") });
+      const back = await executor.revalidateAndRun(planSteps, { trace: meta });
+      if (back.ok) renderPlanPreview(planNl, back.steps, back.commit, tr("towerPlanInvalidEdit"));
+      return;
+    }
+    planSteps = res.steps;
+    renderPlanPreview(planNl, res.steps, res.commit);
+  }
+  function activeMode() {
+    return "solo";
   }
   function renderPlanBusy(msg, _error = false) {
     const box = planBox;
@@ -1359,8 +1597,10 @@ function createTowerModal(deps) {
   }
   function clearPlanPreview() {
     if (planBox) planBox.replaceChildren();
+    planNl = "";
+    planSteps = [];
   }
-  function renderPlanPreview(nl, steps, commit) {
+  function renderPlanPreview(nl, steps, commit, note) {
     const box = planBox;
     if (!box) return;
     box.replaceChildren();
@@ -1368,6 +1608,7 @@ function createTowerModal(deps) {
     const hd = el("div", "tower-plan-hd");
     hd.append(elText("span", "\u2726", ""), elText("span", tr("towerPlanTitle"), ""), el("span", "sp"));
     wrap.appendChild(hd);
+    if (note) wrap.appendChild(elText("div", note, "tower-plan-busy"));
     const stepsBox = el("div", "tower-plan-steps");
     steps.forEach((s, i) => {
       const row = el("div", "tower-pstep");
@@ -1378,7 +1619,58 @@ function createTowerModal(deps) {
       tx.title = label;
       row.append(tx);
       if (s.axis !== "dom" && cmdDanger(s.name)) row.append(elText("span", "\u26A0", "tower-pstep-dg"));
-      row.append(elText("span", "\u23CE", "tower-pstep-go"));
+      const ed = el("div", "tower-pstep-ed");
+      const up = el("button", "tower-pstep-eb");
+      up.type = "button";
+      up.textContent = "\u2191";
+      up.title = tr("towerPlanStepUp");
+      up.dataset.node = `tower/plan/step/${i}/up`;
+      up.disabled = i === 0;
+      up.addEventListener("click", () => void reRenderEdited(moveStep(steps, i, "up")));
+      const down = el("button", "tower-pstep-eb");
+      down.type = "button";
+      down.textContent = "\u2193";
+      down.title = tr("towerPlanStepDown");
+      down.dataset.node = `tower/plan/step/${i}/down`;
+      down.disabled = i === steps.length - 1;
+      down.addEventListener("click", () => void reRenderEdited(moveStep(steps, i, "down")));
+      const del = el("button", "tower-pstep-eb del");
+      del.type = "button";
+      del.textContent = "\u2715";
+      del.title = tr("towerPlanStepDelete");
+      del.dataset.node = `tower/plan/step/${i}/delete`;
+      del.addEventListener("click", () => void reRenderEdited(deleteStep(steps, i)));
+      ed.append(up, down, del);
+      row.append(ed);
+      const pin = document.createElement("input");
+      pin.type = "text";
+      pin.className = "tower-pstep-pin";
+      pin.value = s.axis === "dom" ? JSON.stringify({ address: s.address ?? "" }) : JSON.stringify(s.params ?? {});
+      pin.spellcheck = false;
+      pin.dataset.node = `tower/plan/step/${i}/params`;
+      pin.title = tr("towerPlanStepParams");
+      const commitParam = () => {
+        let parsed;
+        try {
+          const v = JSON.parse(pin.value);
+          if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("not-object");
+          parsed = v;
+        } catch {
+          pin.classList.add("bad");
+          onLive({ kind: "start", who: "\u2726" });
+          onLive({ kind: "end", text: tr("towerPlanBadJson") });
+          return;
+        }
+        void reRenderEdited(editParams(steps, i, parsed));
+      };
+      pin.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitParam();
+        }
+      });
+      pin.addEventListener("change", commitParam);
+      row.append(pin);
       stepsBox.appendChild(row);
     });
     wrap.appendChild(stepsBox);
@@ -1537,6 +1829,8 @@ function createTowerModal(deps) {
     isOpen: () => ov != null,
     // 헤드리스 slow-path — executor 단일 실행점 직통(모달 open 비의존). dry-run 반환(실행 0), commit() 별도.
     planAndRun: (nl, opts) => executor.planAndRun(nl, opts),
+    // 편집된 plan 재검증 + dry-run(M9) — executor 직통. 편집 검증 우회 0, commit 은 편집된 plan + rollback 보호.
+    revalidateAndRun: (steps, opts) => executor.revalidateAndRun(steps, opts),
     // 다중 에이전트 분배(M6) — executor.distributeAndRun 직통. 모드별 planFor 는 main.ts 가 주입.
     distributeAndRun: (nl, opts) => executor.distributeAndRun(nl, opts),
     // reflection 루프(M8) — executor.reflectAndRun 직통(모달 open 비의존, executor 상주). danger 게이트 매 step.
@@ -1622,6 +1916,7 @@ function setupTower(app, label, lang, planner, trace) {
   render();
   return {
     planAndRun: (nl, opts) => modal.planAndRun(nl, opts),
+    revalidateAndRun: (steps, opts) => modal.revalidateAndRun(steps, opts),
     distributeAndRun: (nl, opts) => modal.distributeAndRun(nl, opts),
     reflectAndRun: (nl, opts) => modal.reflectAndRun(nl, opts),
     previewInject: (nl, steps) => modal.previewInject(nl, steps),
@@ -1956,6 +2251,14 @@ ${priorContext}` : systemPrompt;
             type: "boolean",
             description: "true = render the dry-run preview in the tower modal UI (opens it if closed) for visual snapshot verification. Requires plan injection."
           },
+          edit: {
+            type: "array",
+            description: 'M9 editable dry-run preview: an ordered list of edit ops applied to the injected plan BEFORE commit, each {op:"delete"|"up"|"down"|"params", index:N, params?:{...}}. The EDITED plan is re-validated via validatePlan (an edit introducing an unknown command/address is rejected) and is what commit dispatches \u2014 never the original. Requires plan injection.'
+          },
+          autoConfirm: {
+            type: "string",
+            description: 'M9 headless rollback verification only: "deny" auto-denies the desktop confirm for danger steps during this commit (deterministic \u2014 no human click). Auto-deny is the SAFE direction (destructive never runs); there is NO auto-accept (accepting destructive headlessly is forbidden). Use to drive a destructive batch whose danger step deterministically fails, triggering the limited rollback of the already-executed invertible steps.'
+          },
           distribute: {
             type: "boolean",
             description: "true = multi-agent distribution (M6): the active conversation mode decides how the plan is split \u2014 facil (the facilitator splits across domain peers via @mention), turn (sequential dependent-step chain, one round-robin), simul (each checked agent proposes an independent plan in parallel). Destructive confirms are serialized FIFO (one open at a time). Requires an active Clubhouse view with checked agents."
@@ -1964,13 +2267,36 @@ ${priorContext}` : systemPrompt;
         handler: async (p) => {
           const text = String(p?.text ?? "").trim();
           if (!text) return { ok: false, error: "text \uD544\uC218" };
-          const inject = Array.isArray(p?.plan) ? p.plan : void 0;
+          let inject = Array.isArray(p?.plan) ? p.plan : void 0;
+          const edits = Array.isArray(p?.edit) ? p.edit : void 0;
+          if (edits && inject) {
+            let steps2 = inject;
+            for (const e of edits) {
+              const idx = Number(e?.index);
+              if (!Number.isInteger(idx)) continue;
+              if (e?.op === "delete") steps2 = deleteStep(steps2, idx);
+              else if (e?.op === "up") steps2 = moveStep(steps2, idx, "up");
+              else if (e?.op === "down") steps2 = moveStep(steps2, idx, "down");
+              else if (e?.op === "params" && e?.params && typeof e.params === "object")
+                steps2 = editParams(steps2, idx, e.params);
+            }
+            inject = steps2;
+          }
+          const autoDeny = p?.autoConfirm === "deny";
           if (p?.render === true && inject) {
             const r = await tower.previewInject(text, inject);
             if (!r.ok) return { ok: false, code: r.code, message: r.message };
             return { ok: true, dryRun: true, rendered: true, steps: r.steps };
           }
           const shouldYield = () => (activeClubhouse?.pendingHuman.length ?? 0) > 0;
+          if (edits && inject) {
+            const traceMeta2 = { nl: text, mode: activeClubhouse?.mode ?? "solo" };
+            const res2 = await tower.revalidateAndRun(inject, { trace: traceMeta2 });
+            if (!res2.ok) return { ok: false, code: res2.code, message: res2.message };
+            if (p?.commit !== true) return { ok: true, dryRun: true, edited: true, steps: res2.steps };
+            const c2 = await res2.commit({ shouldYield, autoDenyConfirm: autoDeny });
+            return { ok: c2.ok, committed: true, edited: true, code: c2.code, steps: res2.steps, results: c2.results, yielded: c2.yielded, rollback: c2.rollback };
+          }
           if (p?.distribute === true) {
             const opts = distOptions();
             if (!opts) return { ok: false, error: "\uD65C\uC131 Clubhouse \uBDF0/\uCC38\uC5EC\uC790 \uC5C6\uC74C(\uBD84\uBC30\uB294 \uB77C\uC774\uBE0C \uBAA8\uB4DC\xB7\uB85C\uC2A4\uD130 \uD544\uC694)" };
@@ -1985,8 +2311,8 @@ ${priorContext}` : systemPrompt;
           if (!res.ok) return { ok: false, code: res.code, message: res.message };
           const steps = res.steps;
           if (p?.commit !== true) return { ok: true, dryRun: true, steps };
-          const c = await res.commit({ shouldYield });
-          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded };
+          const c = await res.commit({ shouldYield, autoDenyConfirm: autoDeny });
+          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded, rollback: c.rollback };
         }
       })
     );
