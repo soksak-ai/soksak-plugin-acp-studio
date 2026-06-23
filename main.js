@@ -485,6 +485,66 @@ function findFirstSplitId(node) {
   return void 0;
 }
 
+// src/tower/distribute.ts
+function stepAssignee(s, participants2, nameOf2) {
+  if (s && typeof s.assignee === "string" && participants2.includes(s.assignee)) return s.assignee;
+  const hay = JSON.stringify(s ?? {}).toLowerCase();
+  for (const id of participants2) {
+    for (const cand of [nameOf2(id), id]) {
+      if (hay.includes(("@" + cand).toLowerCase())) return id;
+    }
+  }
+  return null;
+}
+async function distributePlans(opts) {
+  const { mode, participants: participants2, facilitatorId, nameOf: nameOf2, planFor } = opts;
+  const sys = (id) => opts.systemPromptFor ? opts.systemPromptFor(id) : "";
+  if (participants2.length <= 1) {
+    const id = participants2[0];
+    if (!id) return { mode, plans: [] };
+    const steps2 = parsePlan(await planFor(id, sys(id))) ?? [];
+    return { mode, plans: steps2.length ? [{ agentId: id, steps: steps2 }] : [] };
+  }
+  if (mode === "simul") {
+    const results = await Promise.all(
+      participants2.map(async (id) => {
+        const steps2 = parsePlan(await planFor(id, sys(id))) ?? [];
+        return { agentId: id, steps: steps2 };
+      })
+    );
+    return { mode, plans: results.filter((p) => p.steps.length > 0) };
+  }
+  if (mode === "turn") {
+    const plans2 = [];
+    let priorContext = "";
+    for (const id of participants2) {
+      const raw2 = await planFor(id, sys(id), priorContext || void 0);
+      const steps2 = parsePlan(raw2) ?? [];
+      if (steps2.length) plans2.push({ agentId: id, steps: steps2 });
+      priorContext = `${priorContext}${priorContext ? "\n" : ""}[${nameOf2(id)} \uC758 \uC9C1\uC804 PLAN]
+${JSON.stringify(steps2)}`;
+    }
+    return { mode, plans: plans2 };
+  }
+  const fid = participants2.includes(facilitatorId) ? facilitatorId : participants2[0];
+  const raw = await planFor(fid, sys(fid));
+  const steps = parsePlan(raw) ?? [];
+  const byAgent = /* @__PURE__ */ new Map();
+  for (const s of steps) {
+    const who = stepAssignee(s, participants2, nameOf2) ?? fid;
+    const arr = byAgent.get(who) ?? [];
+    const { assignee: _drop, ...clean } = s;
+    arr.push(clean);
+    byAgent.set(who, arr);
+  }
+  const plans = [];
+  for (const id of [fid, ...participants2.filter((p) => p !== fid)]) {
+    const arr = byAgent.get(id);
+    if (arr && arr.length) plans.push({ agentId: id, steps: arr });
+  }
+  return { mode, plans };
+}
+
 // src/tower/executor.ts
 var CONFIRM_EXPOSED_NODES = ["tower/confirm", "tower/confirm/cancel"];
 function isForbiddenChrome(address) {
@@ -507,6 +567,15 @@ function createExecutor(deps) {
   const { app, confirmGate } = deps;
   const exec = (name, params) => app.commands.execute(name, params ?? {});
   const gates = /* @__PURE__ */ new Map();
+  let confirmTail = Promise.resolve();
+  function enqueueConfirm(issue, info) {
+    const run = confirmTail.then(() => confirmGate(issue, info));
+    confirmTail = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
   async function sealedDispatch(token) {
     const entry = gates.get(token);
     if (!entry) {
@@ -521,7 +590,7 @@ function createExecutor(deps) {
       gates.set(token2, { name, params });
       return token2;
     };
-    const token = await confirmGate(issue, { command: name, danger, params });
+    const token = await enqueueConfirm(issue, { command: name, danger, params });
     if (token == null) {
       return { ok: false, code: "CONFIRM_DENIED", message: "\uC0AC\uC6A9\uC790\uAC00 \uC704\uD5D8 \uBA85\uB839 \uD655\uC778\uC744 \uAC70\uBD80/\uCDE8\uC18C\uD568" };
     }
@@ -572,9 +641,10 @@ function createExecutor(deps) {
       statuses: Array.isArray(st?.statuses) ? st.statuses : []
     };
   }
-  async function dispatchPlan(steps) {
+  async function dispatchPlan(steps, opts = {}) {
     const results = [];
     for (const s of steps) {
+      if (opts.shouldYield?.()) return { ok: true, yielded: true, results };
       const r = await dispatchStep(s);
       results.push({ step: s, result: r });
       if (!r.ok) return { ok: false, code: r.code, message: r.message, results };
@@ -593,7 +663,7 @@ function createExecutor(deps) {
       const v = validatePlan(opts.injectPlan, planContextFromDomain(map));
       if (!v.ok) return { ok: false, code: v.code, message: v.message, steps: opts.injectPlan };
       const frozen = opts.injectPlan;
-      return { ok: true, steps: frozen, commit: () => dispatchPlan(frozen) };
+      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
     }
     if (!deps.planner) {
       return { ok: false, code: "NO_PLANNER", message: "planning \uC5D4\uC9C4\uC774 \uC5F0\uACB0\uB418\uC9C0 \uC54A\uC74C(\uC5D0\uC774\uC804\uD2B8 \uBBF8\uC5F0\uACB0)" };
@@ -629,11 +699,58 @@ function createExecutor(deps) {
         continue;
       }
       const frozen = steps;
-      return { ok: true, steps: frozen, commit: () => dispatchPlan(frozen) };
+      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
     }
     return { ok: false, ...lastErr };
   }
-  const api = { runExample, runCommand, runDom, runPlan, planAndRun };
+  async function distributeAndRun(nl, opts) {
+    const map = await fetchDomainMap();
+    const ctx = planContextFromDomain(map);
+    const systemPromptFor = (_id) => buildPlanSystemPrompt(nl, map);
+    const dist = await distributePlans({
+      mode: opts.mode,
+      participants: opts.participants,
+      facilitatorId: opts.facilitatorId,
+      nameOf: opts.nameOf,
+      planFor: opts.planFor,
+      systemPromptFor
+    });
+    if (!dist.plans.length) {
+      return { ok: false, code: "NO_PLAN", message: "\uC5B4\uB290 \uC5D0\uC774\uC804\uD2B8\uB3C4 \uC720\uD6A8\uD55C PLAN \uC744 \uB9CC\uB4E4\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4." };
+    }
+    const validated = [];
+    for (const p of dist.plans) {
+      const v = validatePlan(p.steps, ctx);
+      if (!v.ok) {
+        return {
+          ok: false,
+          code: v.code,
+          message: `${opts.nameOf(p.agentId)} \uC758 PLAN step #${v.index} \uAC70\uBD80: ${v.message}`
+        };
+      }
+      validated.push(p);
+    }
+    const frozen = validated.map((p) => ({ agentId: p.agentId, steps: p.steps }));
+    const commit = async (copts) => {
+      const perAgent = [];
+      if (opts.mode === "simul") {
+        const settled = await Promise.all(
+          frozen.map(async (p) => ({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) }))
+        );
+        perAgent.push(...settled);
+      } else {
+        for (const p of frozen) {
+          if (copts?.shouldYield?.()) return { ok: true, yielded: true, perAgent };
+          perAgent.push({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) });
+        }
+      }
+      const yielded = perAgent.some((a) => a.result.yielded);
+      const ok = perAgent.every((a) => a.result.ok);
+      return { ok, yielded, perAgent };
+    };
+    return { ok: true, mode: dist.mode, plans: frozen, commit };
+  }
+  const api = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun };
   Object.defineProperty(api, SEALED, { value: sealedDispatch, enumerable: false });
   return api;
 }
@@ -1179,6 +1296,8 @@ function createTowerModal(deps) {
     isOpen: () => ov != null,
     // 헤드리스 slow-path — executor 단일 실행점 직통(모달 open 비의존). dry-run 반환(실행 0), commit() 별도.
     planAndRun: (nl, opts) => executor.planAndRun(nl, opts),
+    // 다중 에이전트 분배(M6) — executor.distributeAndRun 직통. 모드별 planFor 는 main.ts 가 주입.
+    distributeAndRun: (nl, opts) => executor.distributeAndRun(nl, opts),
     // 결정적 시각 E2E — 모달을 열고 KNOWN plan 을 dry-run preview 로 렌더(라이브 LLM 우회). 실행 0.
     previewInject: async (nl, steps) => {
       if (!ov) api.open();
@@ -1260,6 +1379,7 @@ function setupTower(app, label, lang, planner) {
   render();
   return {
     planAndRun: (nl, opts) => modal.planAndRun(nl, opts),
+    distributeAndRun: (nl, opts) => modal.distributeAndRun(nl, opts),
     previewInject: (nl, steps) => modal.previewInject(nl, steps),
     dispose: () => {
       unregister?.();
@@ -1512,8 +1632,25 @@ var main_default = {
       const cwd = st?.cwd ?? projectCwd();
       return engine.requestPlan({ agent }, systemPrompt, cwd);
     };
+    const towerPlanFor = async (agentId, systemPrompt, priorContext) => {
+      const st = activeClubhouse;
+      const cwd = st?.cwd ?? projectCwd();
+      const prompt = priorContext ? `${systemPrompt}
+
+[\uC55E \uC5D0\uC774\uC804\uD2B8\uB4E4\uC758 PLAN(\uC758\uC874 \uB9E5\uB77D)]
+${priorContext}` : systemPrompt;
+      return engine.requestPlan({ agent: agentId }, prompt, cwd);
+    };
     const tower = setupTower(app, t("towerTitle", lang), () => lang, towerPlanner);
     ctx.subscriptions.push({ dispose: () => tower.dispose() });
+    const distOptions = () => {
+      const st = activeClubhouse;
+      if (!st) return null;
+      const parts = participants(st.roster);
+      if (!parts.length) return null;
+      const facilitatorId = parts.includes(st.facilitatorId) ? st.facilitatorId : parts[0];
+      return { mode: st.mode, participants: parts, facilitatorId, nameOf, planFor: towerPlanFor };
+    };
     ctx.subscriptions.push(
       app.commands.register("send", {
         description: "Inject a human message into the active Clubhouse view, equivalent to typing and submitting via the textarea. Use to drive or interject a multi-agent conversation programmatically (E2E, automation, AI control).",
@@ -1572,6 +1709,10 @@ var main_default = {
           render: {
             type: "boolean",
             description: "true = render the dry-run preview in the tower modal UI (opens it if closed) for visual snapshot verification. Requires plan injection."
+          },
+          distribute: {
+            type: "boolean",
+            description: "true = multi-agent distribution (M6): the active conversation mode decides how the plan is split \u2014 facil (the facilitator splits across domain peers via @mention), turn (sequential dependent-step chain, one round-robin), simul (each checked agent proposes an independent plan in parallel). Destructive confirms are serialized FIFO (one open at a time). Requires an active Clubhouse view with checked agents."
           }
         },
         handler: async (p) => {
@@ -1583,12 +1724,22 @@ var main_default = {
             if (!r.ok) return { ok: false, code: r.code, message: r.message };
             return { ok: true, dryRun: true, rendered: true, steps: r.steps };
           }
+          const shouldYield = () => (activeClubhouse?.pendingHuman.length ?? 0) > 0;
+          if (p?.distribute === true) {
+            const opts = distOptions();
+            if (!opts) return { ok: false, error: "\uD65C\uC131 Clubhouse \uBDF0/\uCC38\uC5EC\uC790 \uC5C6\uC74C(\uBD84\uBC30\uB294 \uB77C\uC774\uBE0C \uBAA8\uB4DC\xB7\uB85C\uC2A4\uD130 \uD544\uC694)" };
+            const res2 = await tower.distributeAndRun(text, opts);
+            if (!res2.ok) return { ok: false, code: res2.code, message: res2.message };
+            if (p?.commit !== true) return { ok: true, dryRun: true, mode: res2.mode, plans: res2.plans };
+            const c2 = await res2.commit({ shouldYield });
+            return { ok: c2.ok, committed: true, mode: res2.mode, plans: res2.plans, yielded: c2.yielded, perAgent: c2.perAgent };
+          }
           const res = await tower.planAndRun(text, inject ? { injectPlan: inject } : void 0);
           if (!res.ok) return { ok: false, code: res.code, message: res.message };
           const steps = res.steps;
           if (p?.commit !== true) return { ok: true, dryRun: true, steps };
-          const c = await res.commit();
-          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results };
+          const c = await res.commit({ shouldYield });
+          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded };
         }
       })
     );

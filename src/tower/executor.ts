@@ -24,6 +24,7 @@ import {
   type PlanStep,
   type DomainMap,
 } from "./plan";
+import { distributePlans, type DistMode, type PlanFor, type AgentPlan } from "./distribute";
 
 export interface CommandOutcome {
   ok: boolean;
@@ -44,14 +45,48 @@ export interface StepResult {
 }
 
 // commit 결과 — 전체 ok + step별 기록(results). 첫 실패에서 멈추되, 그때까지의 results 는 보존.
+//   yielded = 사람 인터럽트(pendingHuman)로 중간 양보됨 — 부분 실행 보존(취소-폐기 아님).
 export interface CommitResult extends CommandOutcome {
   results?: StepResult[];
+  yielded?: boolean;
+}
+
+// commit 옵션 — 사람 인터럽트 협조 양보(M6). shouldYield() 가 true 면 다음 step 으로 넘어가기 전에 멈춘다
+//   (현재 step 은 이미 종결, 그때까지의 results 보존). 라이브에선 main.ts 가 () => st.pendingHuman.length>0 주입.
+export interface CommitOptions {
+  shouldYield?: () => boolean;
 }
 
 // dry-run 결과(실행 0). 검증 통과 시 steps + commit() 반환. commit() 호출 시에만 디스패치(사람 ⏎).
 export type PlanRunResult =
-  | { ok: true; steps: PlanStep[]; commit: () => Promise<CommitResult> }
+  | { ok: true; steps: PlanStep[]; commit: (opts?: CommitOptions) => Promise<CommitResult> }
   | { ok: false; code: string; message: string; steps?: PlanStep[] };
+
+// 분배 dry-run 결과(M6) — 모드별 다중 에이전트 plan. 각 에이전트의 검증된 steps + 단일 commit(전 plan 디스패치).
+//   commit 은 simul 이면 병렬(confirm 직렬 큐가 안전 직렬화), turn/facil 이면 순서대로. shouldYield 협조 양보 지원.
+export type DistRunResult =
+  | {
+      ok: true;
+      mode: DistMode;
+      plans: Array<{ agentId: string; steps: PlanStep[] }>;
+      commit: (opts?: CommitOptions) => Promise<DistCommitResult>;
+    }
+  | { ok: false; code: string; message: string };
+
+export interface DistCommitResult extends CommandOutcome {
+  // 에이전트별 commit 결과(부분 실패·yield 보존). 각 plan 은 독립 — 하나 실패해도 나머지는 자기 결과를 남긴다.
+  perAgent: Array<{ agentId: string; result: CommitResult }>;
+  yielded?: boolean;
+}
+
+// 분배 옵션 — 모드/참여자/진행자 + 에이전트별 planning 턴 seam(planFor). main.ts 가 engine 으로 주입.
+export interface DistRunOptions {
+  mode: DistMode;
+  participants: string[];
+  facilitatorId: string;
+  nameOf: (id: string) => string;
+  planFor: PlanFor;
+}
 
 // slow-path 옵션 — planner 미주입 시(deps.planner 도 없으면) NO_PLANNER. hops = 자기교정 상한.
 export interface PlanRunOptions {
@@ -110,6 +145,9 @@ export interface TowerExecutor {
   runPlan: (steps: PlanStep[]) => Promise<CommandOutcome>;
   // slow-path(M5) — 모호 NL → 도메인맵 라이브 주입 planning 턴 → 검증 → dry-run(실행 0) + commit().
   planAndRun: (nl: string, opts?: PlanRunOptions) => Promise<PlanRunResult>;
+  // 다중 에이전트 분배(M6) — 모호 NL → 모드별(facil split / turn 체인 / simul 병렬) 다중 plan → 각 검증
+  //   → 단일 dry-run(실행 0) + commit(). danger step 의 confirm 은 직렬 큐로 한 번에 하나만(simul 안전).
+  distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
 }
 
 // 게이트의 유일 실행 통로(sealedDispatch) 접근 심볼 — 테스트가 "토큰만으로는 못 뚫는다"를 실증하려면
@@ -126,6 +164,23 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
   //   destructive/inject 실행의 name/params 는 오직 confirm 이 발급한 토큰을 통해서만 얻는다. 토큰이 없으면
   //   조회 결과도 없어 sealedDispatch 가 execute 를 구성할 수 없다. 1회용(조회 즉시 삭제 = replay 차단).
   const gates = new Map<string, { name: string; params: Record<string, unknown> }>();
+
+  // ── danger 직렬 confirm 큐(M6, 안전모델 §danger 직렬 큐) ──
+  //   simul 다수 에이전트의 병렬 plan 이 동시에 destructive/inject step 을 commit 하면 confirm 요구가
+  //   동시에 발생한다. 두 confirm 모달이 한꺼번에 뜨면 사람이 헷갈리고 자가승인·오승인 위험이 커진다.
+  //   따라서 confirmGate 호출 자체를 FIFO 로 직렬화한다 — 한 번에 정확히 하나만 열린다. 앞 confirm 이
+  //   해소(수락/거부/타임아웃)된 뒤에야 다음 confirm 이 열린다(이벤트-우선: tail 프라미스 체인, 폴링 0).
+  let confirmTail: Promise<void> = Promise.resolve();
+  function enqueueConfirm(issue: () => string, info: ConfirmInfo): Promise<string | null> {
+    // 새 confirm 을 현재 tail 뒤에 잇는다. tail 이 끝날 때까지 confirmGate 는 호출조차 안 된다(동시 0).
+    const run = confirmTail.then(() => confirmGate(issue, info));
+    // tail 전진 — 이 confirm 이 끝나야(성공/실패 무관) 다음이 시작. catch 로 큐 막힘 0(거부도 통과).
+    confirmTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
 
   // 유일한 destructive/inject 실행 통로 — 토큰으로 게이트 엔트리를 꺼내 그 안의 name/params 로만 실행한다.
   //   인자로 받은 name/params 가 아니라 *엔트리* 가 진실 → 토큰 위조 시 엔트리 부재로 미실행(단일 if 아님).
@@ -151,7 +206,8 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
       gates.set(token, { name, params }); // 수락 순간에만 실행 데이터가 존재.
       return token;
     };
-    const token = await confirmGate(issue, { command: name, danger, params });
+    // confirm 은 직렬 큐를 거친다 — 동시 destructive(simul 병렬 plan)도 한 번에 하나만 열린다(FIFO).
+    const token = await enqueueConfirm(issue, { command: name, danger, params });
     if (token == null) {
       return { ok: false, code: "CONFIRM_DENIED", message: "사용자가 위험 명령 확인을 거부/취소함" };
     }
@@ -221,9 +277,13 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
 
   // plan 디스패치(step별, 첫 실패에서 멈춤) — 각 step 결과를 results 에 기록(피드백). status step 결과는
   //   보존돼 다음 step·다음 턴 컨텍스트로 흐른다(verify, not poll). danger step 은 confirm 게이트 경유.
-  async function dispatchPlan(steps: PlanStep[]): Promise<CommitResult> {
+  //   인터럽트(shouldYield): 다음 step 진입 전 사람 참견(pendingHuman)이 있으면 양보 — 현재까지 실행한
+  //   step 결과(results)는 보존하고 yielded:true 로 멈춘다(취소-폐기 아님, Clubhouse 참견 모델 동형).
+  async function dispatchPlan(steps: PlanStep[], opts: CommitOptions = {}): Promise<CommitResult> {
     const results: StepResult[] = [];
     for (const s of steps) {
+      // step 진입 전 협조 양보 — 부분 실행 보존하고 멈춘다(현재 step 은 시작 안 함, 앞 step 들은 보존).
+      if (opts.shouldYield?.()) return { ok: true, yielded: true, results };
       const r = await dispatchStep(s);
       results.push({ step: s, result: r });
       if (!r.ok) return { ok: false, code: r.code, message: r.message, results };
@@ -251,7 +311,7 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
       const v = validatePlan(opts.injectPlan, planContextFromDomain(map));
       if (!v.ok) return { ok: false, code: v.code, message: v.message, steps: opts.injectPlan };
       const frozen = opts.injectPlan;
-      return { ok: true, steps: frozen, commit: () => dispatchPlan(frozen) };
+      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
     }
     if (!deps.planner) {
       return { ok: false, code: "NO_PLANNER", message: "planning 엔진이 연결되지 않음(에이전트 미연결)" };
@@ -290,12 +350,70 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
       }
       // 검증 통과 — dry-run(실행 0) + commit 클로저. commit 시에만 dispatchPlan(사람 ⏎).
       const frozen = steps;
-      return { ok: true, steps: frozen, commit: () => dispatchPlan(frozen) };
+      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
     }
     return { ok: false, ...lastErr };
   }
 
-  const api: TowerExecutor = { runExample, runCommand, runDom, runPlan, planAndRun };
+  // 다중 에이전트 분배 오케스트레이션(M6) — 모드별로 planning 턴을 여러 에이전트에 나누고(distribute.ts),
+  //   각 에이전트 plan 을 라이브 도메인맵으로 전수 검증(미등록 거부)한 뒤 단일 dry-run + commit 을 돌려준다.
+  //   실행은 commit 에서만(slow-path 는 항상 dry-run 우선). simul commit 은 병렬 — 그래서 confirm 직렬 큐가
+  //   필수(동시 destructive 도 한 번에 하나). turn/facil 은 순서대로 디스패치. 검증 실패 plan 은 그 에이전트만
+  //   제외하지 않고 전체를 거부하면 한 동료 오타가 전체를 막는다 — 대신 그 plan 은 commit 에서 실패로 보고하고
+  //   나머지는 자기 결과를 남긴다(독립성). 단, dry-run 단계의 검증 실패는 plans 에서 사유와 함께 표면화한다.
+  async function distributeAndRun(nl: string, opts: DistRunOptions): Promise<DistRunResult> {
+    const map = await fetchDomainMap();
+    const ctx = planContextFromDomain(map);
+    // 도메인맵 라이브 주입 — 분배의 각 planning 턴이 같은 어휘/주소/상태를 본다(단일 진실).
+    const systemPromptFor = (_id: string) => buildPlanSystemPrompt(nl, map);
+    const dist = await distributePlans({
+      mode: opts.mode,
+      participants: opts.participants,
+      facilitatorId: opts.facilitatorId,
+      nameOf: opts.nameOf,
+      planFor: opts.planFor,
+      systemPromptFor,
+    });
+    if (!dist.plans.length) {
+      return { ok: false, code: "NO_PLAN", message: "어느 에이전트도 유효한 PLAN 을 만들지 못했습니다." };
+    }
+    // 각 plan 검증(미등록 거부). 한 plan 이라도 검증 실패면 그 에이전트·사유를 담아 거부(self-correct 표면).
+    const validated: AgentPlan[] = [];
+    for (const p of dist.plans) {
+      const v = validatePlan(p.steps, ctx);
+      if (!v.ok) {
+        return {
+          ok: false,
+          code: v.code,
+          message: `${opts.nameOf(p.agentId)} 의 PLAN step #${(v as any).index} 거부: ${v.message}`,
+        };
+      }
+      validated.push(p);
+    }
+    const frozen = validated.map((p) => ({ agentId: p.agentId, steps: p.steps }));
+    const commit = async (copts?: CommitOptions): Promise<DistCommitResult> => {
+      const perAgent: Array<{ agentId: string; result: CommitResult }> = [];
+      if (opts.mode === "simul") {
+        // 동시 — 전 plan 병렬 디스패치. danger confirm 은 enqueueConfirm(FIFO)이 한 번에 하나로 직렬화.
+        const settled = await Promise.all(
+          frozen.map(async (p) => ({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) })),
+        );
+        perAgent.push(...settled);
+      } else {
+        // 순차(turn)·진행(facil) — 분배 순서대로. 매 plan 전 협조 양보(인터럽트) 체크.
+        for (const p of frozen) {
+          if (copts?.shouldYield?.()) return { ok: true, yielded: true, perAgent };
+          perAgent.push({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) });
+        }
+      }
+      const yielded = perAgent.some((a) => a.result.yielded);
+      const ok = perAgent.every((a) => a.result.ok);
+      return { ok, yielded, perAgent };
+    };
+    return { ok: true, mode: dist.mode, plans: frozen, commit };
+  }
+
+  const api: TowerExecutor = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun };
   // 적대 테스트 전용 봉인 통로 — gatedRun 분기를 우회해 토큰만으로 sealedDispatch 를 직접 호출(NOP 공격
   //   동형). 데이터 의존이라 위조/소비 토큰 → 게이트 엔트리 부재 → 0 실행을 단언한다(검증을 지워도 막힘).
   Object.defineProperty(api, SEALED, { value: sealedDispatch, enumerable: false });

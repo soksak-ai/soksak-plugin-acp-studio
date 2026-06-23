@@ -184,8 +184,27 @@ export default {
       const cwd = st?.cwd ?? projectCwd();
       return engine.requestPlan({ agent }, systemPrompt, cwd);
     };
+    // 다중 에이전트 분배(M6) — 지정 에이전트에게 planning 턴을 보낸다(distribute.ts PlanFor seam). priorContext
+    //   (turn 모드 의존 체인)는 시스템 프롬프트에 덧붙인다. requestPlan 은 단발 연결(권한 deny) — content 탭 무영향.
+    const towerPlanFor = async (agentId: string, systemPrompt: string, priorContext?: string): Promise<string> => {
+      const st = activeClubhouse;
+      const cwd = st?.cwd ?? projectCwd();
+      const prompt = priorContext ? `${systemPrompt}\n\n[앞 에이전트들의 PLAN(의존 맥락)]\n${priorContext}` : systemPrompt;
+      return engine.requestPlan({ agent: agentId }, prompt, cwd);
+    };
     const tower = setupTower(app, t("towerTitle", lang), () => lang, towerPlanner);
     ctx.subscriptions.push({ dispose: () => tower.dispose() });
+
+    // 활성 Clubhouse 상태 → 분배 옵션. 모드/참여자/진행자/이름을 라이브 상태에서 끌어온다(단일 진실).
+    //   참여자 0(또는 활성 뷰 0)이면 null — 호출자가 거부 사유 반환. planFor 는 위 towerPlanFor seam.
+    const distOptions = (): import("./tower/executor").DistRunOptions | null => {
+      const st = activeClubhouse;
+      if (!st) return null;
+      const parts = participants(st.roster);
+      if (!parts.length) return null;
+      const facilitatorId = parts.includes(st.facilitatorId) ? st.facilitatorId : parts[0];
+      return { mode: st.mode, participants: parts, facilitatorId, nameOf, planFor: towerPlanFor };
+    };
 
     // ── send(라이브 Clubhouse 에 사람 메시지 주입 — 노출 command 로만 E2E·자동화 구동) ──
     ctx.subscriptions.push(
@@ -257,6 +276,11 @@ export default {
             type: "boolean",
             description: "true = render the dry-run preview in the tower modal UI (opens it if closed) for visual snapshot verification. Requires plan injection.",
           },
+          distribute: {
+            type: "boolean",
+            description:
+              "true = multi-agent distribution (M6): the active conversation mode decides how the plan is split — facil (the facilitator splits across domain peers via @mention), turn (sequential dependent-step chain, one round-robin), simul (each checked agent proposes an independent plan in parallel). Destructive confirms are serialized FIFO (one open at a time). Requires an active Clubhouse view with checked agents.",
+          },
         },
         handler: async (p: any) => {
           const text = String(p?.text ?? "").trim();
@@ -268,13 +292,26 @@ export default {
             if (!r.ok) return { ok: false, code: r.code, message: r.message };
             return { ok: true, dryRun: true, rendered: true, steps: r.steps };
           }
+          // 인터럽트 협조 양보 — commit 도중 사람 참견(pendingHuman)이 들어오면 다음 step/plan 전에 멈춘다
+          //   (현재까지 실행 보존, 취소-폐기 아님). 활성 뷰 없으면 항상 false(헤드리스 단발).
+          const shouldYield = () => (activeClubhouse?.pendingHuman.length ?? 0) > 0;
+          // distribute:true → 다중 에이전트 분배(M6). 모드는 활성 뷰에서. 주입 plan 은 simul 단일경로라 무시.
+          if (p?.distribute === true) {
+            const opts = distOptions();
+            if (!opts) return { ok: false, error: "활성 Clubhouse 뷰/참여자 없음(분배는 라이브 모드·로스터 필요)" };
+            const res = await tower.distributeAndRun(text, opts);
+            if (!res.ok) return { ok: false, code: res.code, message: res.message };
+            if (p?.commit !== true) return { ok: true, dryRun: true, mode: res.mode, plans: res.plans };
+            const c = await res.commit({ shouldYield });
+            return { ok: c.ok, committed: true, mode: res.mode, plans: res.plans, yielded: c.yielded, perAgent: c.perAgent };
+          }
           const res = await tower.planAndRun(text, inject ? { injectPlan: inject } : undefined);
           if (!res.ok) return { ok: false, code: res.code, message: res.message };
           // dry-run 결과 — 검증된 step(축/이름/주소/파라미터) 그대로 노출(투명). 아직 실행 0.
           const steps = res.steps;
           if (p?.commit !== true) return { ok: true, dryRun: true, steps };
-          const c = await res.commit();
-          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results };
+          const c = await res.commit({ shouldYield });
+          return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded };
         },
       }),
     );

@@ -27,6 +27,8 @@ import {
   type Planner,
   type PlanRunResult,
   type PlanRunOptions,
+  type DistRunResult,
+  type DistRunOptions,
 } from "./executor";
 import { EXAMPLE_COMMANDS, type PlanStep } from "./plan";
 
@@ -206,6 +208,8 @@ export interface TowerModal {
   dispose: () => void;
   // 헤드리스 slow-path 구동(노출 command·E2E) — executor.planAndRun 직통. 모달 open 비의존(executor 상주).
   planAndRun: (nl: string, opts?: PlanRunOptions) => Promise<PlanRunResult>;
+  // 다중 에이전트 분배(M6) — 모드별(facil/turn/simul) 다중 plan → 단일 dry-run + commit. danger confirm 직렬 큐.
+  distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
   // 결정적 시각 E2E — KNOWN plan 을 모달 UI 에 dry-run preview 로 렌더(라이브 LLM 우회). 모달 닫혀 있으면
   //   먼저 연다. 검증·게이트는 동일(주입 plan 도 validatePlan + danger 게이트). snapshot 으로 미리보기 확인용.
   previewInject: (nl: string, steps: PlanStep[]) => Promise<PlanRunResult>;
@@ -310,7 +314,8 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
   let confirmOv: HTMLElement | null = null;
   const confirmGate: ConfirmGate = (issue, info) =>
     new Promise<string | null>((resolve) => {
-      // 이미 confirm 진행 중이면 새 요청은 거부(직렬 — danger 큐는 M6, 여기선 중복 방지).
+      // executor 가 enqueueConfirm(FIFO)으로 confirmGate 호출을 직렬화한다(M6) — 동시 destructive 도 한
+      //   번에 하나만 여기 도달. 따라서 confirmOv 는 호출 시 항상 null(아래 가드는 belt-and-suspenders).
       if (confirmOv) return resolve(null);
       let done = false;
       const finish = (token: string | null) => {
@@ -703,6 +708,8 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
     isOpen: () => ov != null,
     // 헤드리스 slow-path — executor 단일 실행점 직통(모달 open 비의존). dry-run 반환(실행 0), commit() 별도.
     planAndRun: (nl: string, opts?: PlanRunOptions) => executor.planAndRun(nl, opts),
+    // 다중 에이전트 분배(M6) — executor.distributeAndRun 직통. 모드별 planFor 는 main.ts 가 주입.
+    distributeAndRun: (nl: string, opts: DistRunOptions) => executor.distributeAndRun(nl, opts),
     // 결정적 시각 E2E — 모달을 열고 KNOWN plan 을 dry-run preview 로 렌더(라이브 LLM 우회). 실행 0.
     previewInject: async (nl: string, steps: PlanStep[]) => {
       if (!ov) api.open();
