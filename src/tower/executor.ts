@@ -25,7 +25,7 @@ import {
   type DomainMap,
 } from "./plan";
 import { distributePlans, type DistMode, type PlanFor, type AgentPlan } from "./distribute";
-import { deriveStatus, type TraceSink, type PlanMeta, type PlanTrace } from "./trace";
+import { deriveStatus, type TraceSink, type PlanMeta, type PlanTrace, type PlanOutcome } from "./trace";
 
 export interface CommandOutcome {
   ok: boolean;
@@ -109,6 +109,61 @@ export interface PlanRunOptions {
   trace?: PlanMeta;
 }
 
+// ── M8: post-execution reflection 루프 + 가드 ──
+//
+// planAndRun(M5/M7)은 PRE-execution(검증)까지다 — validatePlan 통과 후 dry-run 으로 멈춘다. reflectAndRun
+//   은 그 다음을 더한다: plan 을 실제 디스패치(각 step 은 동일 danger 게이트 경유)한 뒤 결과를 VERIFY 한다
+//   — (1) 어떤 step 이 런타임 status:"failed"(코어가 ok:false), 또는 (2) goalCheck status.query 가 의도
+//   상태 미달성을 보이면 → 실패(어느 step·그 에러·사후 status)를 다음 planning 턴에 correction 으로 되먹여
+//   재계획·재디스패치한다. verify 는 status.query/step 결과로 — 폴링 0(RULE 7).
+//
+// 가드(RULE — computer-use step-inflation 교훈, 토큰 폭주 방지):
+//   - maxSteps: plan step 수 상한. 초과 plan 은 디스패치 0(거부) — too-many-steps 사유를 되먹임.
+//   - maxReplans: 재계획 반복 상한. 초과 → 무한루프 금지, 사람에게 ESCALATE(마지막 실패 표면).
+// fast-path(예시행/팔레트 정확매치)는 이 루프에 절대 진입하지 않는다 — runExample/runCommand 가 직행(0비용).
+
+// goalCheck = 사후 상태 검증 step. plan 디스패치가 ok 여도 이 status.query 결과를 verifyGoal 로 판정해
+//   "의도한 상태에 실제 도달했는지" 를 단언한다(verify, not poll). 미주입이면 step 성공만으로 verified.
+export interface ReflectOptions {
+  maxReplans?: number; // 재계획 반복 상한(기본 3) — 초과 시 escalate. 0 = 재계획 0(1회 시도만).
+  maxSteps?: number; // plan step 수 상한(기본 20) — 초과 plan 거부(디스패치 0). step 인플레이션 가드.
+  goalCheck?: PlanStep; // 사후 목표 검증 step(보통 status.query). 미주입이면 step 성공만으로 verified.
+  // goalCheck 결과 → 목표 달성 여부. true = 달성(루프 종료). 미주입이면 항상 true(step 성공만 판정).
+  verifyGoal?: (out: CommandOutcome) => boolean;
+  // trace 메타(M7) — 각 반복(재계획)이 독립 plan 레코드로 세션에 링크되고, escalation 도 outcome 으로 남는다.
+  trace?: PlanMeta;
+  // 결정적 E2E 주입 — 라이브 planner 를 우회해 스크립트된 planner 를 쓴다(소켓 E2E·자동화). 보안 우회 아님:
+  //   주입 plan 도 동일하게 validatePlan(미등록 거부) + dispatchPlan(매 step danger 게이트)을 거친다. reflection
+  //   루프 전체(verify·재계획·escalate·trace)를 라이브 LLM 없이 결정적으로 구동하기 위한 hook(tower.reflect 사용).
+  planner?: Planner;
+  // goalCheck 결과의 어떤 status code 가 "미달성" 인가(주입 verifyGoal 대신 선언적 E2E 판정). 이 코드 중 하나라도
+  //   goalCheck statuses 에 있으면 미달성으로 본다(없으면 달성). 소켓 E2E 가 함수 대신 데이터로 goal-verify 구동.
+  failGoalCodes?: string[];
+}
+
+// 한 반복(초기 시도 또는 한 번의 재계획)의 기록. RED→GREEN 단언 대상(유한 반복·verify 결과·거부 사유).
+export interface ReflectIteration {
+  steps: PlanStep[]; // 이 반복에서 계획된 step(검증/거부 전 raw).
+  rejected?: boolean; // maxSteps 초과·검증 실패 등으로 디스패치 전에 거부됐는가.
+  rejectCode?: string; // 거부 사유 코드(TOO_MANY_STEPS / UNKNOWN_COMMAND / NOT_EXPOSED / PLAN_PARSE_FAILED 등).
+  verified: boolean; // 디스패치 후 verify 통과(step 전부 ok + goal 달성)했는가.
+  failure?: { code?: string; message?: string; step?: PlanStep; result?: CommandOutcome }; // verify 실패 사유.
+}
+
+// reflection 루프 최종 결과. outcome: succeeded(목표 달성) / escalated(상한 초과·사람 개입 필요) /
+//   rejected(planner 미연결 등 시작 전 거부). iterations 는 시도한 모든 반복(유한 — cap 으로 보장).
+export type ReflectResult = {
+  ok: boolean;
+  outcome: "succeeded" | "escalated" | "rejected";
+  iterations: ReflectIteration[];
+  // escalate 시 사람에게 표면화 — 막힌 이유 + 마지막 실패(어느 step·그 결과). 무한루프 대신 개입 요청.
+  escalation?: { reason: string; lastFailure?: { code?: string; message?: string; step?: PlanStep; result?: CommandOutcome } };
+};
+
+// escalation 사람-표면 메시지(라이브 모달/main.ts 가 라이브칸·status 로 띄운다). 영어 base 가 아니라
+//   사용자 대면 문구는 호스트 언어를 따르나, executor 는 결정적 단언을 위해 고정 한국어 구를 반환한다.
+export const ESCALATION_REASON = "여기서 막혔습니다 — 개입 필요";
+
 // confirm 게이트 — 사람이 수락하면 issue() 로 1회용 토큰을 발급하고 그 토큰을 반환한다.
 //   거부/타임아웃 → null(토큰 미발급). 실모달은 DOM(아래 createConfirmModal)이 구현, 테스트는 주입.
 export type ConfirmGate = (issue: () => string, info: ConfirmInfo) => Promise<string | null>;
@@ -153,6 +208,32 @@ function randomToken(): string {
   return `t${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 }
 
+// 디스패치 실패 → 다음 planning 턴의 correction 블록(M8 되먹임, 순수). buildPlanSystemPrompt 가 이 문자열을
+//   "[직전 PLAN 이 거부되었습니다]" 섹션으로 싣는다. 실패한 step·그 에러 코드/메시지를 그대로 노출해
+//   에이전트가 같은 실수를 반복하지 않게 한다(self-correct). 테스트가 프롬프트에서 이 사유를 단언한다.
+function buildFailureCorrection(fail?: { code?: string; message?: string; step?: PlanStep; result?: CommandOutcome }): string {
+  if (!fail) return "직전 PLAN 의 실행이 실패했습니다. 다른 접근으로 다시 계획하세요.";
+  const where = fail.step ? ` (실패 step: ${fail.step.axis}/${fail.step.name})` : "";
+  const code = fail.code ? `[${fail.code}] ` : "";
+  const msg = fail.message ?? "원인 불명";
+  return `직전 PLAN 의 실행이 실패했습니다${where}: ${code}${msg}. 이 실패를 피하도록 다른 step 으로 다시 계획하세요.`;
+}
+
+// goalCheck 결과 → 목표 달성 여부(M8 verify, 순수). 우선순위: 주입 verifyGoal(함수) > failGoalCodes(선언적
+//   소켓 E2E — 이 status code 중 하나라도 statuses 에 있으면 미달성) > goalOut.ok(기본 — read 성공만으로 달성).
+function resolveGoalReached(
+  goalOut: CommandOutcome,
+  opts: { verifyGoal?: (out: CommandOutcome) => boolean; failGoalCodes?: string[] },
+): boolean {
+  if (opts.verifyGoal) return !!opts.verifyGoal(goalOut);
+  if (opts.failGoalCodes && opts.failGoalCodes.length) {
+    const codes = new Set(opts.failGoalCodes);
+    const statuses: any[] = Array.isArray((goalOut as any)?.statuses) ? (goalOut as any).statuses : [];
+    return !statuses.some((s) => codes.has(s?.code));
+  }
+  return !!goalOut.ok;
+}
+
 export interface TowerExecutor {
   runExample: (index: number) => Promise<CommandOutcome>;
   runCommand: (name: string, params?: Record<string, unknown>) => Promise<CommandOutcome>;
@@ -163,6 +244,10 @@ export interface TowerExecutor {
   // 다중 에이전트 분배(M6) — 모호 NL → 모드별(facil split / turn 체인 / simul 병렬) 다중 plan → 각 검증
   //   → 단일 dry-run(실행 0) + commit(). danger step 의 confirm 은 직렬 큐로 한 번에 하나만(simul 안전).
   distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
+  // post-execution reflection 루프(M8) — plan 디스패치(각 step 동일 danger 게이트) → verify(step 실패 OR
+  //   goalCheck 미달성) → 실패 되먹임 → 재계획·재디스패치. maxSteps/maxReplans 가드, 상한 초과 → escalate.
+  //   planAndRun 의 dry-run 과 달리 즉시 실행하는 자율 루프(autonomous) — 단, 게이트는 매 step 강제.
+  reflectAndRun: (nl: string, opts?: ReflectOptions) => Promise<ReflectResult>;
 }
 
 // 게이트의 유일 실행 통로(sealedDispatch) 접근 심볼 — 테스트가 "토큰만으로는 못 뚫는다"를 실증하려면
@@ -485,7 +570,140 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
     return { ok: true, mode: dist.mode, plans: frozen, commit };
   }
 
-  const api: TowerExecutor = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun };
+  // 한 plan 을 trace 와 엮어 디스패치(M8 반복마다 독립 plan 레코드) — begin→dispatchPlan(step별 기록).
+  //   종결(finish)은 호출자가 결정한다 — verify(goalCheck)가 디스패치 뒤에 오므로, 같은 plan 의 최종 outcome
+  //   (committed/failed/escalated)을 verify 결과까지 보고 정해야 한다. finish 콜백을 함께 돌려준다.
+  //   trace 미주입이면 finish 는 no-op(기록 0). M8 의 각 반복(초기 시도·각 재계획)이 이 단위로 영속된다.
+  async function dispatchTraced(
+    steps: PlanStep[],
+    meta: PlanMeta | undefined,
+  ): Promise<{ result: CommitResult; finish: (outcome: PlanOutcome) => Promise<void> }> {
+    const sink = deps.trace;
+    if (!sink || !meta) return { result: await dispatchPlan(steps), finish: async () => {} };
+    const tr = await sink.begin(meta);
+    const result = await dispatchPlan(steps, {}, tr);
+    return { result, finish: (outcome) => tr.finish(outcome) };
+  }
+
+  // post-execution reflection 루프(M8). planAndRun 의 PRE-execution(dry-run)과 달리 즉시 디스패치하는 자율
+  //   루프지만, 매 step 은 동일 danger 게이트(confirmGate)를 강제 경유한다(재계획도 우회 0). 흐름:
+  //   계획(planner+buildPlanSystemPrompt, correction 되먹임) → maxSteps 가드(초과 거부) → validatePlan →
+  //   디스패치(각 step 게이트) → VERIFY(step 전부 ok + goalCheck 달성?) → 실패면 사유를 correction 으로
+  //   되먹여 재계획. maxReplans 초과 → 무한루프 금지, ESCALATE(마지막 실패 표면). 모든 verify 는 step
+  //   결과·status.query 로 — 폴링 0(RULE 7).
+  async function reflectAndRun(nl: string, opts: ReflectOptions = {}): Promise<ReflectResult> {
+    // 결정적 E2E 는 opts.planner(스크립트)를 우선 — 라이브 LLM 우회. 둘 다 없으면 rejected(에이전트 미연결).
+    const planner = opts.planner ?? deps.planner;
+    if (!planner) {
+      return { ok: false, outcome: "rejected", iterations: [] };
+    }
+    const maxReplans = Math.max(0, opts.maxReplans ?? 3);
+    const maxSteps = Math.max(1, opts.maxSteps ?? 20);
+    const iterations: ReflectIteration[] = [];
+    let correction: string | undefined;
+    let lastFailure: ReflectIteration["failure"] | undefined;
+
+    // 총 시도 = 초기 1 + 재계획 maxReplans. attempt 0 = 초기, 그 이상 = 재계획(유한 — cap 보장).
+    for (let attempt = 0; attempt <= maxReplans; attempt++) {
+      // 매 시도 라이브 도메인맵 재캡처 — 직전 디스패치가 화면을 바꿨을 수 있으므로 항상 최신(verify, not poll).
+      const map = await fetchDomainMap();
+      const prompt = buildPlanSystemPrompt(nl, map, correction);
+      let raw: string;
+      try {
+        raw = await planner(prompt);
+      } catch (e) {
+        lastFailure = { code: "PLANNER_FAILED", message: String((e as Error)?.message ?? e) };
+        iterations.push({ steps: [], rejected: true, rejectCode: "PLANNER_FAILED", verified: false, failure: lastFailure });
+        correction = `플래너 호출 실패: ${lastFailure.message}`;
+        continue;
+      }
+      const steps = parsePlan(raw);
+      if (!steps) {
+        lastFailure = { code: "PLAN_PARSE_FAILED", message: "PLAN(JSON 배열)을 파싱하지 못했습니다." };
+        iterations.push({ steps: [], rejected: true, rejectCode: "PLAN_PARSE_FAILED", verified: false, failure: lastFailure });
+        correction = "직전 출력에서 JSON 배열 PLAN 을 찾지 못했습니다. 설명 없이 JSON 배열만 출력하세요.";
+        continue;
+      }
+
+      // 가드 — maxSteps 초과 plan 은 디스패치 0(step 인플레이션 차단). 사유를 되먹여 더 작은 plan 유도.
+      if (steps.length > maxSteps) {
+        lastFailure = { code: "TOO_MANY_STEPS", message: `plan step ${steps.length} 개 — 한도 ${maxSteps} 초과` };
+        iterations.push({ steps, rejected: true, rejectCode: "TOO_MANY_STEPS", verified: false, failure: lastFailure });
+        correction = `직전 PLAN 의 step 이 ${steps.length} 개로 한도(${maxSteps} 단계)를 초과했습니다. 더 적은 step 으로 같은 목표를 달성하세요.`;
+        continue;
+      }
+
+      // 검증 — 미등록 command/주소 거부(M5 와 동일 단일 진실). 거부 사유를 되먹임.
+      const v = validatePlan(steps, planContextFromDomain(map));
+      if (!v.ok) {
+        lastFailure = { code: v.code, message: v.message, step: steps[(v as any).index] };
+        iterations.push({ steps, rejected: true, rejectCode: v.code, verified: false, failure: lastFailure });
+        correction = `step #${(v as any).index} 거부: ${v.message}. 위 도메인맵에 실제로 있는 command/주소만 쓰세요.`;
+        continue;
+      }
+
+      // 디스패치 — 각 step 은 dispatchPlan 을 통해 danger 게이트(confirmGate)를 강제 경유(재계획도 우회 0).
+      //   trace 주입 시 이 반복이 독립 plan 레코드로 영속(begin→step별 기록). finish 는 verify 뒤에 호출.
+      const meta = opts.trace ? { nl: opts.trace.nl, mode: opts.trace.mode, agent: opts.trace.agent } : undefined;
+      const { result: commit, finish } = await dispatchTraced(steps, meta);
+      // 이 시도가 마지막(더 이상 재계획 안 함)인가 — verify 실패 시 이 plan 의 outcome 을 escalated 로 종결한다.
+      const isLast = attempt >= maxReplans;
+
+      // VERIFY 1 — 어떤 step 이 런타임 실패(ok:false)면 그 step·결과를 실패로 잡는다(첫 실패에서 멈춤이
+      //   results 마지막에 있다). danger 거부(CONFIRM_DENIED)·게이트(GATE_REQUIRED)도 ok:false 라 실패로 본다.
+      if (!commit.ok) {
+        const failedStep = commit.results?.find((s) => !s.result.ok);
+        lastFailure = {
+          code: commit.code ?? failedStep?.result.code,
+          message: commit.message ?? failedStep?.result.message,
+          step: failedStep?.step,
+          result: failedStep?.result,
+        };
+        // 마지막 시도면 이 plan 자체를 escalated 로 종결(별도 zero-step 레코드 없음 — 단일 진실). 아니면 failed.
+        await finish(isLast ? "escalated" : "failed");
+        iterations.push({ steps, verified: false, failure: lastFailure });
+        correction = buildFailureCorrection(lastFailure);
+        continue;
+      }
+
+      // VERIFY 2 — goal-verify(사후 상태 단언). plan 이 ok 여도 goalCheck status.query 결과가 의도 상태를
+      //   미달성하면(verifyGoal false) 재계획. 폴링 0 — 단발 status.query 로 사후 상태를 단언한다(verify).
+      if (opts.goalCheck) {
+        const goalOut = await dispatchStep(opts.goalCheck);
+        const reached = resolveGoalReached(goalOut, opts);
+        if (!reached) {
+          lastFailure = {
+            code: "GOAL_NOT_REACHED",
+            message: "디스패치는 성공했으나 사후 status.query 가 의도한 상태 미달성을 보고함",
+            step: opts.goalCheck,
+            result: goalOut,
+          };
+          // step 은 ok 였으나 목표 미달 — plan outcome 은 committed(step 실행됨)지만 escalated/failed 로 표기해
+          //   "목표 미달성으로 끝난 시도" 임을 감사에 남긴다(마지막이면 escalated, 아니면 failed).
+          await finish(isLast ? "escalated" : "failed");
+          iterations.push({ steps, verified: false, failure: lastFailure });
+          correction = buildFailureCorrection(lastFailure);
+          continue;
+        }
+      }
+
+      // verify 통과 — 목표 달성. 이 plan 을 committed 로 종결하고 루프 종료(succeeded).
+      await finish("committed");
+      iterations.push({ steps, verified: true });
+      return { ok: true, outcome: "succeeded", iterations };
+    }
+
+    // 상한(maxReplans) 초과 — 무한루프 대신 사람에게 escalate(마지막 실패 표면). 마지막 시도의 plan 레코드는
+    //   이미 escalated 로 종결됐다(위 finish). 여기선 사람-표면 outcome 만 반환한다(별도 zero-step 레코드 0).
+    return {
+      ok: false,
+      outcome: "escalated",
+      iterations,
+      escalation: { reason: ESCALATION_REASON, lastFailure },
+    };
+  }
+
+  const api: TowerExecutor = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun, reflectAndRun };
   // 적대 테스트 전용 봉인 통로 — gatedRun 분기를 우회해 토큰만으로 sealedDispatch 를 직접 호출(NOP 공격
   //   동형). 데이터 의존이라 위조/소비 토큰 → 게이트 엔트리 부재 → 0 실행을 단언한다(검증을 지워도 막힘).
   Object.defineProperty(api, SEALED, { value: sealedDispatch, enumerable: false });

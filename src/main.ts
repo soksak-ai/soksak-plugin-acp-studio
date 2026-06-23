@@ -330,6 +330,75 @@ export default {
       }),
     );
 
+    // ── tower.reflect(타워 post-execution reflection 루프 — 디스패치→verify→재계획→escalate, M8) ──
+    // planAndRun(dry-run)과 달리 즉시 디스패치하는 자율 루프지만 매 step 은 동일 danger 게이트를 강제 경유한다.
+    //   라이브: 활성 Clubhouse 엔진 planner 로 plan 을 짜고 실패를 되먹여 재계획. plans 주입 시 결정적 E2E
+    //   (스크립트된 planner 우회 — 검증·게이트는 동일, 보안 우회 0). maxSteps/maxReplans 가드 + 상한 초과
+    //   escalate(무한루프 금지). 재계획·escalation 은 tower.trace 에 영속된다(감사). 노출 command 로 자가검증.
+    ctx.subscriptions.push(
+      app.commands.register("tower.reflect", {
+        description:
+          "Drive the control-tower post-execution reflection loop (M8): plan -> dispatch (each step still danger-gated) -> verify the outcome (a step that failed at runtime, or a goal-verify status.query showing the intended state was not reached) -> feed the failure back into a re-plan turn -> dispatch the corrected plan. Bounded by maxSteps (reject an over-large plan) and maxReplans (cap re-plan iterations); on cap-exceeded it ESCALATES to the human instead of looping forever, surfacing the last failure. Each iteration and the escalation are persisted to the session trace (tower.trace). Pass a scripted plans sequence for deterministic E2E (still validated and danger-gated — no security bypass).",
+        triggers: { ko: "타워 reflection 재계획 검증 루프 자율 escalate 가드 컨트롤타워" },
+        params: {
+          text: { type: "string", required: true, description: "Natural-language request to plan, dispatch, verify, and re-plan on failure." },
+          plans: {
+            type: "array",
+            description:
+              "Deterministic E2E injection: an ordered array of KNOWN plans (each a step array of {axis,name,params|address}). The reflection loop consumes them in order as if a planner returned them — exercising dispatch, verify, re-plan, escalation, and trace without a live LLM. Each plan is still validated (unknown command/address rejected) and danger-gated on every step.",
+          },
+          goalCheck: {
+            type: "object",
+            description:
+              "Optional post-execution goal-verify step (a status.query step {axis:'status',name:'status.query',params}). After a plan dispatches ok, this is queried and its result decides whether the intended state was reached. Use with failGoalCodes.",
+          },
+          failGoalCodes: {
+            type: "array",
+            description:
+              "Status codes that mean the goal was NOT reached: if any goalCheck status carries one of these codes, the loop treats the plan as a goal-verify failure and re-plans. Declarative goal-verify for headless E2E (e.g. [\"dirty\",\"busy\"]).",
+          },
+          maxReplans: { type: "number", description: "Cap on re-plan iterations (default 3). On cap-exceeded the loop escalates to the human instead of looping forever." },
+          maxSteps: { type: "number", description: "Max steps per plan (default 20). A plan exceeding this is rejected (not dispatched) and the loop re-plans with a smaller-plan correction (step-inflation guard)." },
+        },
+        handler: async (p: any) => {
+          const text = String(p?.text ?? "").trim();
+          if (!text) return { ok: false, error: "text 필수" };
+          // 결정적 E2E — plans(스크립트 plan 시퀀스)가 있으면 그 순서대로 돌려주는 planner 를 구성(라이브 우회).
+          //   검증·게이트·verify·재계획·trace 는 모두 동일(보안 우회 0). 라이브 모드면 활성 엔진 planner 사용.
+          let plannerInject: import("./tower/executor").Planner | undefined;
+          if (Array.isArray(p?.plans)) {
+            const scripted: any[] = p.plans;
+            let i = 0;
+            plannerInject = async () => {
+              const cur = scripted[Math.min(i++, scripted.length - 1)];
+              return JSON.stringify(Array.isArray(cur) ? cur : []);
+            };
+          }
+          const goalCheck = p?.goalCheck && typeof p.goalCheck === "object" ? (p.goalCheck as import("./tower/plan").PlanStep) : undefined;
+          const failGoalCodes = Array.isArray(p?.failGoalCodes) ? (p.failGoalCodes as string[]) : undefined;
+          const maxReplans = Number.isFinite(p?.maxReplans) ? Math.max(0, Number(p.maxReplans)) : undefined;
+          const maxSteps = Number.isFinite(p?.maxSteps) ? Math.max(1, Number(p.maxSteps)) : undefined;
+          // trace 메타(M7) — 각 반복(재계획)이 독립 plan 레코드로, escalation 은 마지막 plan outcome="escalated" 로.
+          const traceMeta = { nl: text, mode: activeClubhouse?.mode ?? "reflect" };
+          const res = await tower.reflectAndRun(text, {
+            planner: plannerInject,
+            goalCheck,
+            failGoalCodes,
+            maxReplans,
+            maxSteps,
+            trace: traceMeta,
+          });
+          // 투명 — outcome(succeeded/escalated/rejected)·각 반복(steps/verified/rejectCode/failure)·escalation 표면.
+          return {
+            ok: res.ok,
+            outcome: res.outcome,
+            iterations: res.iterations,
+            escalation: res.escalation,
+          };
+        },
+      }),
+    );
+
     // ── tower.trace(타워 세션/trace 조회 — 영속된 plan·step·결과 이력, RULE 8 관찰 가능) ──
     // 현재 세션(프로젝트)의 최근 plan 들을 createdAt 내림차순으로, plan 옵션이 있으면 그 plan 의 step 을
     //   seq 오름차순(실행 순서)으로 돌려준다. 영속이라 window.reload 후에도 같은 키로 재조회된다. data 권한

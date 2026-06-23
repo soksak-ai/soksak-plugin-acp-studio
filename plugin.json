@@ -130,6 +130,13 @@
         }
       },
       {
+        "name": "tower.reflect",
+        "title": {
+          "en": "Tower Reflect (post-execution loop, headless)",
+          "ko": "컨트롤 타워 reflection(디스패치→검증→재계획→escalate, M8)"
+        }
+      },
+      {
         "name": "tower.trace",
         "title": {
           "en": "Tower Trace (session plan/step history)",

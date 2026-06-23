@@ -33,8 +33,9 @@ export const PLANS = "tower_plans";
 export const STEPS = "tower_steps";
 
 // plan outcome 분류 — 한 plan 의 최종 상태. committed=전 step 실행, dry-run-discarded=사람이 ⏎ 안 누르고
-//   버림, yielded=사람 인터럽트로 중간 양보, failed=어떤 step 이 거부/실패(미실행 포함).
-export type PlanOutcome = "committed" | "dry-run-discarded" | "yielded" | "failed";
+//   버림, yielded=사람 인터럽트로 중간 양보, failed=어떤 step 이 거부/실패(미실행 포함), escalated=reflection
+//   루프(M8)가 maxReplans 상한까지 실패해 사람 개입으로 넘긴 마지막 plan(verify 실패 + 더 이상 재계획 안 함).
+export type PlanOutcome = "committed" | "dry-run-discarded" | "yielded" | "failed" | "escalated";
 
 // step status — 한 step 의 결과 분류. ok=실행 성공, failed=실행 실패, denied=danger confirm 거부(미실행),
 //   gated=게이트가 막아 미실행(토큰 부재 등). status 는 코어 결과(outcome.code)에서 파생(단일 진실).

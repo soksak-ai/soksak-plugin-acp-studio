@@ -7,7 +7,7 @@
 // data-node 주소(titlebar/<pluginId>/tower)는 코어가 자동 부여 — ui.tree/ui.input.click 으로 검증.
 
 import { createTowerModal, type TowerModal } from "./modal";
-import type { Planner, PlanRunResult, PlanRunOptions, DistRunResult, DistRunOptions } from "./executor";
+import type { Planner, PlanRunResult, PlanRunOptions, DistRunResult, DistRunOptions, ReflectResult, ReflectOptions } from "./executor";
 import type { PlanStep } from "./plan";
 import type { TraceSink } from "./trace";
 
@@ -22,6 +22,8 @@ export interface TowerHandle {
   planAndRun: (nl: string, opts?: PlanRunOptions) => Promise<PlanRunResult>;
   // 다중 에이전트 분배(M6) — 모달의 executor.distributeAndRun 직통.
   distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
+  // post-execution reflection 루프(M8) — 모달의 executor.reflectAndRun 직통.
+  reflectAndRun: (nl: string, opts?: ReflectOptions) => Promise<ReflectResult>;
   // 결정적 시각 E2E — 모달 UI 에 KNOWN plan dry-run preview 렌더(snapshot 확인용).
   previewInject: (nl: string, steps: PlanStep[]) => Promise<PlanRunResult>;
 }
@@ -54,6 +56,7 @@ export function setupTower(app: any, label: string, lang: () => string, planner?
   return {
     planAndRun: (nl: string, opts?: PlanRunOptions) => modal.planAndRun(nl, opts),
     distributeAndRun: (nl: string, opts: DistRunOptions) => modal.distributeAndRun(nl, opts),
+    reflectAndRun: (nl: string, opts?: ReflectOptions) => modal.reflectAndRun(nl, opts),
     previewInject: (nl: string, steps: PlanStep[]) => modal.previewInject(nl, steps),
     dispose: () => {
       unregister?.();

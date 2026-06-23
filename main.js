@@ -636,6 +636,7 @@ function createTrace(data, opts) {
 }
 
 // src/tower/executor.ts
+var ESCALATION_REASON = "\uC5EC\uAE30\uC11C \uB9C9\uD614\uC2B5\uB2C8\uB2E4 \u2014 \uAC1C\uC785 \uD544\uC694";
 var CONFIRM_EXPOSED_NODES = ["tower/confirm", "tower/confirm/cancel"];
 function isForbiddenChrome(address) {
   return /(^|\/)tower\/confirm(\/|$)/.test(address) || /(^|\/)modal\/confirm-close(\/|$)/.test(address);
@@ -651,6 +652,22 @@ function randomToken() {
   } catch {
   }
   return `t${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
+function buildFailureCorrection(fail) {
+  if (!fail) return "\uC9C1\uC804 PLAN \uC758 \uC2E4\uD589\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4. \uB2E4\uB978 \uC811\uADFC\uC73C\uB85C \uB2E4\uC2DC \uACC4\uD68D\uD558\uC138\uC694.";
+  const where = fail.step ? ` (\uC2E4\uD328 step: ${fail.step.axis}/${fail.step.name})` : "";
+  const code = fail.code ? `[${fail.code}] ` : "";
+  const msg = fail.message ?? "\uC6D0\uC778 \uBD88\uBA85";
+  return `\uC9C1\uC804 PLAN \uC758 \uC2E4\uD589\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4${where}: ${code}${msg}. \uC774 \uC2E4\uD328\uB97C \uD53C\uD558\uB3C4\uB85D \uB2E4\uB978 step \uC73C\uB85C \uB2E4\uC2DC \uACC4\uD68D\uD558\uC138\uC694.`;
+}
+function resolveGoalReached(goalOut, opts) {
+  if (opts.verifyGoal) return !!opts.verifyGoal(goalOut);
+  if (opts.failGoalCodes && opts.failGoalCodes.length) {
+    const codes = new Set(opts.failGoalCodes);
+    const statuses = Array.isArray(goalOut?.statuses) ? goalOut.statuses : [];
+    return !statuses.some((s) => codes.has(s?.code));
+  }
+  return !!goalOut.ok;
 }
 var SEALED = Symbol("tower.executor.sealed");
 function createExecutor(deps) {
@@ -881,7 +898,100 @@ function createExecutor(deps) {
     };
     return { ok: true, mode: dist.mode, plans: frozen, commit };
   }
-  const api = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun };
+  async function dispatchTraced(steps, meta) {
+    const sink = deps.trace;
+    if (!sink || !meta) return { result: await dispatchPlan(steps), finish: async () => {
+    } };
+    const tr = await sink.begin(meta);
+    const result = await dispatchPlan(steps, {}, tr);
+    return { result, finish: (outcome) => tr.finish(outcome) };
+  }
+  async function reflectAndRun(nl, opts = {}) {
+    const planner = opts.planner ?? deps.planner;
+    if (!planner) {
+      return { ok: false, outcome: "rejected", iterations: [] };
+    }
+    const maxReplans = Math.max(0, opts.maxReplans ?? 3);
+    const maxSteps = Math.max(1, opts.maxSteps ?? 20);
+    const iterations = [];
+    let correction;
+    let lastFailure;
+    for (let attempt = 0; attempt <= maxReplans; attempt++) {
+      const map = await fetchDomainMap();
+      const prompt = buildPlanSystemPrompt(nl, map, correction);
+      let raw;
+      try {
+        raw = await planner(prompt);
+      } catch (e) {
+        lastFailure = { code: "PLANNER_FAILED", message: String(e?.message ?? e) };
+        iterations.push({ steps: [], rejected: true, rejectCode: "PLANNER_FAILED", verified: false, failure: lastFailure });
+        correction = `\uD50C\uB798\uB108 \uD638\uCD9C \uC2E4\uD328: ${lastFailure.message}`;
+        continue;
+      }
+      const steps = parsePlan(raw);
+      if (!steps) {
+        lastFailure = { code: "PLAN_PARSE_FAILED", message: "PLAN(JSON \uBC30\uC5F4)\uC744 \uD30C\uC2F1\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4." };
+        iterations.push({ steps: [], rejected: true, rejectCode: "PLAN_PARSE_FAILED", verified: false, failure: lastFailure });
+        correction = "\uC9C1\uC804 \uCD9C\uB825\uC5D0\uC11C JSON \uBC30\uC5F4 PLAN \uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uC124\uBA85 \uC5C6\uC774 JSON \uBC30\uC5F4\uB9CC \uCD9C\uB825\uD558\uC138\uC694.";
+        continue;
+      }
+      if (steps.length > maxSteps) {
+        lastFailure = { code: "TOO_MANY_STEPS", message: `plan step ${steps.length} \uAC1C \u2014 \uD55C\uB3C4 ${maxSteps} \uCD08\uACFC` };
+        iterations.push({ steps, rejected: true, rejectCode: "TOO_MANY_STEPS", verified: false, failure: lastFailure });
+        correction = `\uC9C1\uC804 PLAN \uC758 step \uC774 ${steps.length} \uAC1C\uB85C \uD55C\uB3C4(${maxSteps} \uB2E8\uACC4)\uB97C \uCD08\uACFC\uD588\uC2B5\uB2C8\uB2E4. \uB354 \uC801\uC740 step \uC73C\uB85C \uAC19\uC740 \uBAA9\uD45C\uB97C \uB2EC\uC131\uD558\uC138\uC694.`;
+        continue;
+      }
+      const v = validatePlan(steps, planContextFromDomain(map));
+      if (!v.ok) {
+        lastFailure = { code: v.code, message: v.message, step: steps[v.index] };
+        iterations.push({ steps, rejected: true, rejectCode: v.code, verified: false, failure: lastFailure });
+        correction = `step #${v.index} \uAC70\uBD80: ${v.message}. \uC704 \uB3C4\uBA54\uC778\uB9F5\uC5D0 \uC2E4\uC81C\uB85C \uC788\uB294 command/\uC8FC\uC18C\uB9CC \uC4F0\uC138\uC694.`;
+        continue;
+      }
+      const meta = opts.trace ? { nl: opts.trace.nl, mode: opts.trace.mode, agent: opts.trace.agent } : void 0;
+      const { result: commit, finish } = await dispatchTraced(steps, meta);
+      const isLast = attempt >= maxReplans;
+      if (!commit.ok) {
+        const failedStep = commit.results?.find((s) => !s.result.ok);
+        lastFailure = {
+          code: commit.code ?? failedStep?.result.code,
+          message: commit.message ?? failedStep?.result.message,
+          step: failedStep?.step,
+          result: failedStep?.result
+        };
+        await finish(isLast ? "escalated" : "failed");
+        iterations.push({ steps, verified: false, failure: lastFailure });
+        correction = buildFailureCorrection(lastFailure);
+        continue;
+      }
+      if (opts.goalCheck) {
+        const goalOut = await dispatchStep(opts.goalCheck);
+        const reached = resolveGoalReached(goalOut, opts);
+        if (!reached) {
+          lastFailure = {
+            code: "GOAL_NOT_REACHED",
+            message: "\uB514\uC2A4\uD328\uCE58\uB294 \uC131\uACF5\uD588\uC73C\uB098 \uC0AC\uD6C4 status.query \uAC00 \uC758\uB3C4\uD55C \uC0C1\uD0DC \uBBF8\uB2EC\uC131\uC744 \uBCF4\uACE0\uD568",
+            step: opts.goalCheck,
+            result: goalOut
+          };
+          await finish(isLast ? "escalated" : "failed");
+          iterations.push({ steps, verified: false, failure: lastFailure });
+          correction = buildFailureCorrection(lastFailure);
+          continue;
+        }
+      }
+      await finish("committed");
+      iterations.push({ steps, verified: true });
+      return { ok: true, outcome: "succeeded", iterations };
+    }
+    return {
+      ok: false,
+      outcome: "escalated",
+      iterations,
+      escalation: { reason: ESCALATION_REASON, lastFailure }
+    };
+  }
+  const api = { runExample, runCommand, runDom, runPlan, planAndRun, distributeAndRun, reflectAndRun };
   Object.defineProperty(api, SEALED, { value: sealedDispatch, enumerable: false });
   return api;
 }
@@ -1429,6 +1539,8 @@ function createTowerModal(deps) {
     planAndRun: (nl, opts) => executor.planAndRun(nl, opts),
     // 다중 에이전트 분배(M6) — executor.distributeAndRun 직통. 모드별 planFor 는 main.ts 가 주입.
     distributeAndRun: (nl, opts) => executor.distributeAndRun(nl, opts),
+    // reflection 루프(M8) — executor.reflectAndRun 직통(모달 open 비의존, executor 상주). danger 게이트 매 step.
+    reflectAndRun: (nl, opts) => executor.reflectAndRun(nl, opts),
     // 결정적 시각 E2E — 모달을 열고 KNOWN plan 을 dry-run preview 로 렌더(라이브 LLM 우회). 실행 0.
     previewInject: async (nl, steps) => {
       if (!ov) api.open();
@@ -1511,6 +1623,7 @@ function setupTower(app, label, lang, planner, trace) {
   return {
     planAndRun: (nl, opts) => modal.planAndRun(nl, opts),
     distributeAndRun: (nl, opts) => modal.distributeAndRun(nl, opts),
+    reflectAndRun: (nl, opts) => modal.reflectAndRun(nl, opts),
     previewInject: (nl, steps) => modal.previewInject(nl, steps),
     dispose: () => {
       unregister?.();
@@ -1874,6 +1987,61 @@ ${priorContext}` : systemPrompt;
           if (p?.commit !== true) return { ok: true, dryRun: true, steps };
           const c = await res.commit({ shouldYield });
           return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded };
+        }
+      })
+    );
+    ctx.subscriptions.push(
+      app.commands.register("tower.reflect", {
+        description: "Drive the control-tower post-execution reflection loop (M8): plan -> dispatch (each step still danger-gated) -> verify the outcome (a step that failed at runtime, or a goal-verify status.query showing the intended state was not reached) -> feed the failure back into a re-plan turn -> dispatch the corrected plan. Bounded by maxSteps (reject an over-large plan) and maxReplans (cap re-plan iterations); on cap-exceeded it ESCALATES to the human instead of looping forever, surfacing the last failure. Each iteration and the escalation are persisted to the session trace (tower.trace). Pass a scripted plans sequence for deterministic E2E (still validated and danger-gated \u2014 no security bypass).",
+        triggers: { ko: "\uD0C0\uC6CC reflection \uC7AC\uACC4\uD68D \uAC80\uC99D \uB8E8\uD504 \uC790\uC728 escalate \uAC00\uB4DC \uCEE8\uD2B8\uB864\uD0C0\uC6CC" },
+        params: {
+          text: { type: "string", required: true, description: "Natural-language request to plan, dispatch, verify, and re-plan on failure." },
+          plans: {
+            type: "array",
+            description: "Deterministic E2E injection: an ordered array of KNOWN plans (each a step array of {axis,name,params|address}). The reflection loop consumes them in order as if a planner returned them \u2014 exercising dispatch, verify, re-plan, escalation, and trace without a live LLM. Each plan is still validated (unknown command/address rejected) and danger-gated on every step."
+          },
+          goalCheck: {
+            type: "object",
+            description: "Optional post-execution goal-verify step (a status.query step {axis:'status',name:'status.query',params}). After a plan dispatches ok, this is queried and its result decides whether the intended state was reached. Use with failGoalCodes."
+          },
+          failGoalCodes: {
+            type: "array",
+            description: 'Status codes that mean the goal was NOT reached: if any goalCheck status carries one of these codes, the loop treats the plan as a goal-verify failure and re-plans. Declarative goal-verify for headless E2E (e.g. ["dirty","busy"]).'
+          },
+          maxReplans: { type: "number", description: "Cap on re-plan iterations (default 3). On cap-exceeded the loop escalates to the human instead of looping forever." },
+          maxSteps: { type: "number", description: "Max steps per plan (default 20). A plan exceeding this is rejected (not dispatched) and the loop re-plans with a smaller-plan correction (step-inflation guard)." }
+        },
+        handler: async (p) => {
+          const text = String(p?.text ?? "").trim();
+          if (!text) return { ok: false, error: "text \uD544\uC218" };
+          let plannerInject;
+          if (Array.isArray(p?.plans)) {
+            const scripted = p.plans;
+            let i = 0;
+            plannerInject = async () => {
+              const cur = scripted[Math.min(i++, scripted.length - 1)];
+              return JSON.stringify(Array.isArray(cur) ? cur : []);
+            };
+          }
+          const goalCheck = p?.goalCheck && typeof p.goalCheck === "object" ? p.goalCheck : void 0;
+          const failGoalCodes = Array.isArray(p?.failGoalCodes) ? p.failGoalCodes : void 0;
+          const maxReplans = Number.isFinite(p?.maxReplans) ? Math.max(0, Number(p.maxReplans)) : void 0;
+          const maxSteps = Number.isFinite(p?.maxSteps) ? Math.max(1, Number(p.maxSteps)) : void 0;
+          const traceMeta = { nl: text, mode: activeClubhouse?.mode ?? "reflect" };
+          const res = await tower.reflectAndRun(text, {
+            planner: plannerInject,
+            goalCheck,
+            failGoalCodes,
+            maxReplans,
+            maxSteps,
+            trace: traceMeta
+          });
+          return {
+            ok: res.ok,
+            outcome: res.outcome,
+            iterations: res.iterations,
+            escalation: res.escalation
+          };
         }
       })
     );

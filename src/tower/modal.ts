@@ -29,6 +29,8 @@ import {
   type PlanRunOptions,
   type DistRunResult,
   type DistRunOptions,
+  type ReflectResult,
+  type ReflectOptions,
 } from "./executor";
 import { EXAMPLE_COMMANDS, type PlanStep } from "./plan";
 import type { TraceSink } from "./trace";
@@ -212,6 +214,9 @@ export interface TowerModal {
   planAndRun: (nl: string, opts?: PlanRunOptions) => Promise<PlanRunResult>;
   // 다중 에이전트 분배(M6) — 모드별(facil/turn/simul) 다중 plan → 단일 dry-run + commit. danger confirm 직렬 큐.
   distributeAndRun: (nl: string, opts: DistRunOptions) => Promise<DistRunResult>;
+  // post-execution reflection 루프(M8) — executor.reflectAndRun 직통. 디스패치→verify→실패 되먹임→재계획,
+  //   maxSteps/maxReplans 가드 + 상한 초과 escalate. fast-path 미경유(planAndRun 과 별개 자율 루프).
+  reflectAndRun: (nl: string, opts?: ReflectOptions) => Promise<ReflectResult>;
   // 결정적 시각 E2E — KNOWN plan 을 모달 UI 에 dry-run preview 로 렌더(라이브 LLM 우회). 모달 닫혀 있으면
   //   먼저 연다. 검증·게이트는 동일(주입 plan 도 validatePlan + danger 게이트). snapshot 으로 미리보기 확인용.
   previewInject: (nl: string, steps: PlanStep[]) => Promise<PlanRunResult>;
@@ -713,6 +718,8 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
     planAndRun: (nl: string, opts?: PlanRunOptions) => executor.planAndRun(nl, opts),
     // 다중 에이전트 분배(M6) — executor.distributeAndRun 직통. 모드별 planFor 는 main.ts 가 주입.
     distributeAndRun: (nl: string, opts: DistRunOptions) => executor.distributeAndRun(nl, opts),
+    // reflection 루프(M8) — executor.reflectAndRun 직통(모달 open 비의존, executor 상주). danger 게이트 매 step.
+    reflectAndRun: (nl: string, opts?: ReflectOptions) => executor.reflectAndRun(nl, opts),
     // 결정적 시각 E2E — 모달을 열고 KNOWN plan 을 dry-run preview 로 렌더(라이브 LLM 우회). 실행 0.
     previewInject: async (nl: string, steps: PlanStep[]) => {
       if (!ov) api.open();
