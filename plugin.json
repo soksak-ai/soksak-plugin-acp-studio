@@ -14,6 +14,7 @@
   "entry": "main.js",
   "permissions": [
     "ui",
+    "ui:titlebar",
     "commands",
     "programs",
     "fs:read"
