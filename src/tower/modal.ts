@@ -31,6 +31,7 @@ import {
   type DistRunOptions,
 } from "./executor";
 import { EXAMPLE_COMMANDS, type PlanStep } from "./plan";
+import type { TraceSink } from "./trace";
 
 // 라이브칸이 구독하는 stable bus 토픽 — Clubhouse 런타임(main.ts)이 스트림 단일 진실에서 재방송한다.
 //   acp.update.<connId> 는 connId 별이라 모달이 직접 못 잡는다 → main.ts onStream 이 이 토픽으로 relay(이벤트-우선).
@@ -197,6 +198,7 @@ export interface TowerModalDeps {
   lang: () => string; // 현재 호스트 언어(locale.changed 로 갱신됨) — 본문 텍스트·재fetch 에 사용
   app: any; // ctx.app — commands.execute(팔레트) · events.on(재fetch) · bus.on(라이브)
   planner?: Planner; // slow-path planning 턴 seam — 없으면 NL Enter 모호 입력이 NO_PLANNER 보고
+  trace?: TraceSink; // 세션/trace 영속(M7, app.data) — executor 로 전달. 없으면 영속 0(순수 동작).
   onChange?: () => void; // 열림/닫힘 변화 단일 채널(헤더 active 동기화, 이벤트-우선)
 }
 
@@ -372,7 +374,8 @@ export function createTowerModal(deps: TowerModalDeps): TowerModal {
     });
 
   // executor = 유일 실행점. 모달은 클릭을 여기로 넘기고 결과만 라이브칸에 반영(로직 누수 0, RULE 6).
-  const executor: TowerExecutor = createExecutor({ app, confirmGate, lang, planner: deps.planner });
+  //   trace(M7) 주입 — executor 가 commit/discard 시 app.data 에 plan·step·outcome 을 영속(이벤트-우선).
+  const executor: TowerExecutor = createExecutor({ app, confirmGate, lang, planner: deps.planner, trace: deps.trace });
 
   // 실행 결과를 라이브칸 시스템 버블로 — 폴링 0, 사람 가시 피드백.
   function reportOutcome(label: string, r: { ok: boolean; code?: string }): void {

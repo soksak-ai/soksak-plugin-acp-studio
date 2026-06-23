@@ -25,6 +25,7 @@ import {
   type DomainMap,
 } from "./plan";
 import { distributePlans, type DistMode, type PlanFor, type AgentPlan } from "./distribute";
+import { deriveStatus, type TraceSink, type PlanMeta, type PlanTrace } from "./trace";
 
 export interface CommandOutcome {
   ok: boolean;
@@ -58,8 +59,14 @@ export interface CommitOptions {
 }
 
 // dry-run 결과(실행 0). 검증 통과 시 steps + commit() 반환. commit() 호출 시에만 디스패치(사람 ⏎).
+//   discard() = 사람이 ⏎ 안 누르고 버림 → trace 에 dry-run-discarded 로 기록(실행 0). trace 미주입이면 no-op.
 export type PlanRunResult =
-  | { ok: true; steps: PlanStep[]; commit: (opts?: CommitOptions) => Promise<CommitResult> }
+  | {
+      ok: true;
+      steps: PlanStep[];
+      commit: (opts?: CommitOptions) => Promise<CommitResult>;
+      discard: () => Promise<void>;
+    }
   | { ok: false; code: string; message: string; steps?: PlanStep[] };
 
 // 분배 dry-run 결과(M6) — 모드별 다중 에이전트 plan. 각 에이전트의 검증된 steps + 단일 commit(전 plan 디스패치).
@@ -86,6 +93,8 @@ export interface DistRunOptions {
   facilitatorId: string;
   nameOf: (id: string) => string;
   planFor: PlanFor;
+  // trace 메타(M7) — 분배 plan 의 영속 기록 메타. agent 는 에이전트별 plan 마다 자동 채워진다(여기선 nl/mode).
+  trace?: { nl: string; mode: string };
 }
 
 // slow-path 옵션 — planner 미주입 시(deps.planner 도 없으면) NO_PLANNER. hops = 자기교정 상한.
@@ -95,6 +104,9 @@ export interface PlanRunOptions {
   //   우회 아님: 주입 plan 도 동일하게 validatePlan(미등록 거부) + dispatchPlan(danger 게이트)을 거친다.
   //   순수 검증·실행 경로를 라이브 에이전트 없이 단언하기 위한 테스트 hook(노출 command tower.plan 이 사용).
   injectPlan?: PlanStep[];
+  // trace 메타(M7) — 이 plan 의 영속 기록 메타(nl/mode/agent). 주입 시 commit/discard 가 trace 에 기록한다.
+  //   미주입(또는 deps.trace 미주입)이면 trace 기록 0(영속 비활성 — 순수 단위 테스트는 trace 없이도 동작).
+  trace?: PlanMeta;
 }
 
 // confirm 게이트 — 사람이 수락하면 issue() 로 1회용 토큰을 발급하고 그 토큰을 반환한다.
@@ -112,6 +124,9 @@ export interface ExecutorDeps {
   confirmGate: ConfirmGate;
   lang?: () => string;
   planner?: Planner; // slow-path planning 턴 seam(main.ts 가 Clubhouse 엔진으로 주입). 없으면 NO_PLANNER.
+  // trace sink(M7) — 코어 generic app.data 위 세션/trace 영속(plan·step·outcome). 미주입이면 영속 0
+  //   (순수 단위 테스트는 trace 없이 동작). 라이브에선 main.ts 가 createTrace(app.data, …) 로 주입.
+  trace?: TraceSink;
 }
 
 // confirm 모달이 노출하는 data-node 경로(소스 단일 진실). 컨테이너만 노출(가시성), accept 는 비노출.
@@ -249,6 +264,14 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
     return runCommand(spec.command, params);
   }
 
+  // 한 step 의 danger 분류(trace 기록용 단일 진실) — dom 은 항상 inject(ui.input.click), command 는
+  //   classifyDanger(코어 미러), status 는 read(비파괴). plan.ts 의 분류와 동일 출처(가짜 안전감 0).
+  function stepDanger(s: PlanStep): "destructive" | "inject" | undefined {
+    if (s.axis === "dom") return "inject"; // ui.input.click = inject(클릭=입력 주입).
+    if (s.axis === "status") return undefined; // read.
+    return classifyDanger(s.name);
+  }
+
   // 단일 step 디스패치(축별 라우팅, 단일 진실) — runPlan·planAndRun.commit 공용. danger command 는
   //   runCommand 가 게이트 경유. dom 은 runDom(보안-chrome 영구 거부). status 는 read 직행(비파괴).
   async function dispatchStep(s: PlanStep): Promise<CommandOutcome> {
@@ -279,13 +302,18 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
   //   보존돼 다음 step·다음 턴 컨텍스트로 흐른다(verify, not poll). danger step 은 confirm 게이트 경유.
   //   인터럽트(shouldYield): 다음 step 진입 전 사람 참견(pendingHuman)이 있으면 양보 — 현재까지 실행한
   //   step 결과(results)는 보존하고 yielded:true 로 멈춘다(취소-폐기 아님, Clubhouse 참견 모델 동형).
-  async function dispatchPlan(steps: PlanStep[], opts: CommitOptions = {}): Promise<CommitResult> {
+  //   tr(M7): 주입된 PlanTrace 가 있으면 각 step 을 실행 직후 그 순간(이벤트)에 영속한다 — 폴링 0. plan 종결
+  //   (commit/yield/실패)은 호출자가 tr.finish 로 기록(outcome 분류). trace 미주입이면 기록 0(순수 동작).
+  async function dispatchPlan(steps: PlanStep[], opts: CommitOptions = {}, tr?: PlanTrace): Promise<CommitResult> {
     const results: StepResult[] = [];
     for (const s of steps) {
       // step 진입 전 협조 양보 — 부분 실행 보존하고 멈춘다(현재 step 은 시작 안 함, 앞 step 들은 보존).
       if (opts.shouldYield?.()) return { ok: true, yielded: true, results };
       const r = await dispatchStep(s);
       results.push({ step: s, result: r });
+      // 이벤트-우선 trace — step 실행 결과를 그 자리에서 기록(danger 분류·status 파생 포함). 영속 실패는
+      //   recordStep 내부에서 삼켜져 실행을 막지 않는다(부수효과). danger 거부도 여기 한 번에 남는다.
+      if (tr) await tr.recordStep({ step: s, outcome: r, danger: stepDanger(s), status: deriveStatus(r) });
       if (!r.ok) return { ok: false, code: r.code, message: r.message, results };
     }
     return { ok: true, results };
@@ -304,6 +332,37 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
   //   검증 실패(미등록 command/주소·파싱 실패)는 에러를 다음 planning 프롬프트에 되먹여 self-correct
   //   (hops 상한, RULE 폭주 방지). 성공 시 **실행하지 않고** dry-run(steps + commit) 반환 — 사람이
   //   ⏎(commit) 해야 비로소 dispatchPlan 으로 디스패치(안전모델: slow-path 는 항상 dry-run 우선).
+  // dry-run 결과를 trace 와 엮는 단일 지점 — commit() 은 begin→dispatchPlan(step별 기록)→finish(outcome
+  //   분류), discard() 는 begin→finish(dry-run-discarded). 같은 plan 을 두 번 종결하지 않게 1회 가드.
+  //   trace 미주입(deps.trace 또는 opts.trace 없음)이면 commit 은 그냥 dispatch, discard 는 no-op.
+  function withTrace(frozen: PlanStep[], meta?: PlanMeta): {
+    commit: (copts?: CommitOptions) => Promise<CommitResult>;
+    discard: () => Promise<void>;
+  } {
+    const sink = deps.trace;
+    if (!sink || !meta) {
+      return { commit: (copts) => dispatchPlan(frozen, copts), discard: async () => {} };
+    }
+    let settled = false; // commit/discard 중 먼저 부른 쪽만 plan 을 종결(이중 outcome 방지).
+    return {
+      commit: async (copts) => {
+        if (settled) return dispatchPlan(frozen, copts); // 이미 종결됨 — 재실행은 trace 없이(방어).
+        settled = true;
+        const tr = await sink.begin(meta);
+        const r = await dispatchPlan(frozen, copts, tr);
+        // outcome 분류 — yielded(인터럽트) > failed(어떤 step 실패/거부) > committed(전 step ok).
+        await tr.finish(r.yielded ? "yielded" : r.ok ? "committed" : "failed");
+        return r;
+      },
+      discard: async () => {
+        if (settled) return;
+        settled = true;
+        const tr = await sink.begin(meta);
+        await tr.finish("dry-run-discarded"); // 사람이 ⏎ 안 누름 — step 실행 0.
+      },
+    };
+  }
+
   async function planAndRun(nl: string, opts: PlanRunOptions = {}): Promise<PlanRunResult> {
     // 결정적 주입(E2E) — KNOWN plan 을 planner 우회로 검증→dry-run. 라이브 도메인맵으로 검증은 동일.
     if (opts.injectPlan) {
@@ -311,7 +370,8 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
       const v = validatePlan(opts.injectPlan, planContextFromDomain(map));
       if (!v.ok) return { ok: false, code: v.code, message: v.message, steps: opts.injectPlan };
       const frozen = opts.injectPlan;
-      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
+      const tw = withTrace(frozen, opts.trace);
+      return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
     }
     if (!deps.planner) {
       return { ok: false, code: "NO_PLANNER", message: "planning 엔진이 연결되지 않음(에이전트 미연결)" };
@@ -348,9 +408,10 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
         correction = `step #${(v as any).index} 거부: ${v.message}`;
         continue;
       }
-      // 검증 통과 — dry-run(실행 0) + commit 클로저. commit 시에만 dispatchPlan(사람 ⏎).
+      // 검증 통과 — dry-run(실행 0) + commit 클로저. commit 시에만 dispatchPlan(사람 ⏎). trace 엮음(M7).
       const frozen = steps;
-      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
+      const tw = withTrace(frozen, opts.trace);
+      return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
     }
     return { ok: false, ...lastErr };
   }
@@ -391,19 +452,30 @@ export function createExecutor(deps: ExecutorDeps): TowerExecutor {
       validated.push(p);
     }
     const frozen = validated.map((p) => ({ agentId: p.agentId, steps: p.steps }));
+    // 분배 plan 의 trace 기록(M7) — 에이전트별로 독립 plan 레코드(agent 표기). nl/mode 는 opts.trace 메타.
+    //   trace 미주입이면 tr=undefined → dispatchPlan 이 기록 0. 한 plan 의 begin→step*→finish 를 묶는다.
+    const sink = deps.trace;
+    const meta = opts.trace;
+    const dispatchAgent = async (p: { agentId: string; steps: PlanStep[] }, copts?: CommitOptions): Promise<CommitResult> => {
+      if (!sink || !meta) return dispatchPlan(p.steps, copts);
+      const tr = await sink.begin({ nl: meta.nl, mode: meta.mode, agent: opts.nameOf(p.agentId) });
+      const r = await dispatchPlan(p.steps, copts, tr);
+      await tr.finish(r.yielded ? "yielded" : r.ok ? "committed" : "failed");
+      return r;
+    };
     const commit = async (copts?: CommitOptions): Promise<DistCommitResult> => {
       const perAgent: Array<{ agentId: string; result: CommitResult }> = [];
       if (opts.mode === "simul") {
         // 동시 — 전 plan 병렬 디스패치. danger confirm 은 enqueueConfirm(FIFO)이 한 번에 하나로 직렬화.
         const settled = await Promise.all(
-          frozen.map(async (p) => ({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) })),
+          frozen.map(async (p) => ({ agentId: p.agentId, result: await dispatchAgent(p, copts) })),
         );
         perAgent.push(...settled);
       } else {
         // 순차(turn)·진행(facil) — 분배 순서대로. 매 plan 전 협조 양보(인터럽트) 체크.
         for (const p of frozen) {
           if (copts?.shouldYield?.()) return { ok: true, yielded: true, perAgent };
-          perAgent.push({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) });
+          perAgent.push({ agentId: p.agentId, result: await dispatchAgent(p, copts) });
         }
       }
       const yielded = perAgent.some((a) => a.result.yielded);

@@ -545,6 +545,96 @@ ${JSON.stringify(steps2)}`;
   return { mode, plans };
 }
 
+// src/tower/trace.ts
+var PLANS = "tower_plans";
+var STEPS = "tower_steps";
+var PLANS_SCHEMA = { indexes: ["sessionId", "createdAt", "outcome", "agent"] };
+var STEPS_SCHEMA = { indexes: ["sessionId", "planId", "seq", "status"] };
+function deriveStatus(outcome) {
+  if (outcome.ok) return "ok";
+  if (outcome.code === "CONFIRM_DENIED") return "denied";
+  if (outcome.code === "GATE_REQUIRED" || outcome.code === "FORBIDDEN_CHROME") return "gated";
+  return "failed";
+}
+function createTrace(data, opts) {
+  const now = opts.now ?? (() => Date.now());
+  const sessionId = opts.sessionId;
+  let defined = null;
+  const ensureDefined = () => {
+    if (!defined) {
+      defined = (async () => {
+        await data.define(PLANS, PLANS_SCHEMA);
+        await data.define(STEPS, STEPS_SCHEMA);
+      })().catch(() => {
+      });
+    }
+    return defined;
+  };
+  async function begin(meta) {
+    await ensureDefined();
+    const createdAt = now();
+    const doc = {
+      sessionId,
+      nl: meta.nl,
+      mode: meta.mode,
+      createdAt,
+      outcome: "running"
+    };
+    if (meta.agent !== void 0) doc.agent = meta.agent;
+    const planId = await data.put(PLANS, doc);
+    let seq = 0;
+    const recordStep = async (rec) => {
+      const s = rec.step;
+      const stepDoc = {
+        sessionId,
+        planId,
+        seq: seq++,
+        axis: s.axis,
+        name: s.name,
+        // 코어 결과 그대로 보존(투명 — 의미가 바뀌면 결과가 바뀐다). status 는 명시 우선, 없으면 코드 파생.
+        outcome: rec.outcome,
+        status: rec.status ?? deriveStatus(rec.outcome),
+        ts: now()
+      };
+      if (s.params !== void 0) stepDoc.params = s.params;
+      if (s.address !== void 0) stepDoc.address = s.address;
+      if (rec.danger !== void 0) stepDoc.danger = rec.danger;
+      try {
+        await data.put(STEPS, stepDoc);
+      } catch {
+      }
+    };
+    const finish = async (outcome) => {
+      try {
+        await data.put(PLANS, { ...doc, outcome, finishedAt: now() }, { id: planId });
+      } catch {
+      }
+    };
+    return { planId, recordStep, finish };
+  }
+  async function recentPlans(o = {}) {
+    await ensureDefined();
+    const rows = await data.query(PLANS, {
+      where: { sessionId },
+      order: "createdAt",
+      desc: true,
+      limit: o.limit ?? 20
+    });
+    return rows;
+  }
+  async function stepsOf(planId) {
+    await ensureDefined();
+    const rows = await data.query(STEPS, {
+      where: { sessionId, planId },
+      order: "seq",
+      desc: false,
+      limit: 1e3
+    });
+    return rows;
+  }
+  return { sessionId, begin, recentPlans, stepsOf };
+}
+
 // src/tower/executor.ts
 var CONFIRM_EXPOSED_NODES = ["tower/confirm", "tower/confirm/cancel"];
 function isForbiddenChrome(address) {
@@ -621,6 +711,11 @@ function createExecutor(deps) {
     }
     return runCommand(spec.command, params);
   }
+  function stepDanger(s) {
+    if (s.axis === "dom") return "inject";
+    if (s.axis === "status") return void 0;
+    return classifyDanger(s.name);
+  }
   async function dispatchStep(s) {
     if (s.axis === "dom") return runDom(s.address);
     if (s.axis === "status") return exec(s.name, s.params ?? {});
@@ -641,12 +736,13 @@ function createExecutor(deps) {
       statuses: Array.isArray(st?.statuses) ? st.statuses : []
     };
   }
-  async function dispatchPlan(steps, opts = {}) {
+  async function dispatchPlan(steps, opts = {}, tr) {
     const results = [];
     for (const s of steps) {
       if (opts.shouldYield?.()) return { ok: true, yielded: true, results };
       const r = await dispatchStep(s);
       results.push({ step: s, result: r });
+      if (tr) await tr.recordStep({ step: s, outcome: r, danger: stepDanger(s), status: deriveStatus(r) });
       if (!r.ok) return { ok: false, code: r.code, message: r.message, results };
     }
     return { ok: true, results };
@@ -657,13 +753,38 @@ function createExecutor(deps) {
     if (!v.ok) return { ok: false, code: v.code, message: v.message, index: v.index };
     return dispatchPlan(steps);
   }
+  function withTrace(frozen, meta) {
+    const sink = deps.trace;
+    if (!sink || !meta) {
+      return { commit: (copts) => dispatchPlan(frozen, copts), discard: async () => {
+      } };
+    }
+    let settled = false;
+    return {
+      commit: async (copts) => {
+        if (settled) return dispatchPlan(frozen, copts);
+        settled = true;
+        const tr = await sink.begin(meta);
+        const r = await dispatchPlan(frozen, copts, tr);
+        await tr.finish(r.yielded ? "yielded" : r.ok ? "committed" : "failed");
+        return r;
+      },
+      discard: async () => {
+        if (settled) return;
+        settled = true;
+        const tr = await sink.begin(meta);
+        await tr.finish("dry-run-discarded");
+      }
+    };
+  }
   async function planAndRun(nl, opts = {}) {
     if (opts.injectPlan) {
       const map = await fetchDomainMap();
       const v = validatePlan(opts.injectPlan, planContextFromDomain(map));
       if (!v.ok) return { ok: false, code: v.code, message: v.message, steps: opts.injectPlan };
       const frozen = opts.injectPlan;
-      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
+      const tw = withTrace(frozen, opts.trace);
+      return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
     }
     if (!deps.planner) {
       return { ok: false, code: "NO_PLANNER", message: "planning \uC5D4\uC9C4\uC774 \uC5F0\uACB0\uB418\uC9C0 \uC54A\uC74C(\uC5D0\uC774\uC804\uD2B8 \uBBF8\uC5F0\uACB0)" };
@@ -699,7 +820,8 @@ function createExecutor(deps) {
         continue;
       }
       const frozen = steps;
-      return { ok: true, steps: frozen, commit: (copts) => dispatchPlan(frozen, copts) };
+      const tw = withTrace(frozen, opts.trace);
+      return { ok: true, steps: frozen, commit: tw.commit, discard: tw.discard };
     }
     return { ok: false, ...lastErr };
   }
@@ -731,17 +853,26 @@ function createExecutor(deps) {
       validated.push(p);
     }
     const frozen = validated.map((p) => ({ agentId: p.agentId, steps: p.steps }));
+    const sink = deps.trace;
+    const meta = opts.trace;
+    const dispatchAgent = async (p, copts) => {
+      if (!sink || !meta) return dispatchPlan(p.steps, copts);
+      const tr = await sink.begin({ nl: meta.nl, mode: meta.mode, agent: opts.nameOf(p.agentId) });
+      const r = await dispatchPlan(p.steps, copts, tr);
+      await tr.finish(r.yielded ? "yielded" : r.ok ? "committed" : "failed");
+      return r;
+    };
     const commit = async (copts) => {
       const perAgent = [];
       if (opts.mode === "simul") {
         const settled = await Promise.all(
-          frozen.map(async (p) => ({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) }))
+          frozen.map(async (p) => ({ agentId: p.agentId, result: await dispatchAgent(p, copts) }))
         );
         perAgent.push(...settled);
       } else {
         for (const p of frozen) {
           if (copts?.shouldYield?.()) return { ok: true, yielded: true, perAgent };
-          perAgent.push({ agentId: p.agentId, result: await dispatchPlan(p.steps, copts) });
+          perAgent.push({ agentId: p.agentId, result: await dispatchAgent(p, copts) });
         }
       }
       const yielded = perAgent.some((a) => a.result.yielded);
@@ -1016,7 +1147,7 @@ function createTowerModal(deps) {
     window.addEventListener("keydown", onKey, true);
     ok.focus();
   });
-  const executor = createExecutor({ app, confirmGate, lang, planner: deps.planner });
+  const executor = createExecutor({ app, confirmGate, lang, planner: deps.planner, trace: deps.trace });
   function reportOutcome(label, r) {
     let key = "towerRunOk";
     if (!r.ok) key = r.code === "NEEDS_TARGET" ? "towerRunNeedsTarget" : r.code === "CONFIRM_DENIED" ? "towerRunDenied" : "towerRunFailed";
@@ -1361,8 +1492,8 @@ function createTowerModal(deps) {
 
 // src/tower/header.ts
 var SPARKLE_ICON = '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .962L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z" />';
-function setupTower(app, label, lang, planner) {
-  const modal = createTowerModal({ title: label, lang, app, planner, onChange: () => render() });
+function setupTower(app, label, lang, planner, trace) {
+  const modal = createTowerModal({ title: label, lang, app, planner, trace, onChange: () => render() });
   let unregister = null;
   const render = () => {
     unregister = app.ui.registerHeaderAction({
@@ -1641,7 +1772,9 @@ var main_default = {
 ${priorContext}` : systemPrompt;
       return engine.requestPlan({ agent: agentId }, prompt, cwd);
     };
-    const tower = setupTower(app, t("towerTitle", lang), () => lang, towerPlanner);
+    const traceSessionId = () => app.project?.current?.()?.root || "default";
+    const trace = app.data ? createTrace(app.data, { sessionId: traceSessionId() }) : void 0;
+    const tower = setupTower(app, t("towerTitle", lang), () => lang, towerPlanner, trace);
     ctx.subscriptions.push({ dispose: () => tower.dispose() });
     const distOptions = () => {
       const st = activeClubhouse;
@@ -1728,18 +1861,40 @@ ${priorContext}` : systemPrompt;
           if (p?.distribute === true) {
             const opts = distOptions();
             if (!opts) return { ok: false, error: "\uD65C\uC131 Clubhouse \uBDF0/\uCC38\uC5EC\uC790 \uC5C6\uC74C(\uBD84\uBC30\uB294 \uB77C\uC774\uBE0C \uBAA8\uB4DC\xB7\uB85C\uC2A4\uD130 \uD544\uC694)" };
-            const res2 = await tower.distributeAndRun(text, opts);
+            const res2 = await tower.distributeAndRun(text, { ...opts, trace: { nl: text, mode: opts.mode } });
             if (!res2.ok) return { ok: false, code: res2.code, message: res2.message };
             if (p?.commit !== true) return { ok: true, dryRun: true, mode: res2.mode, plans: res2.plans };
             const c2 = await res2.commit({ shouldYield });
             return { ok: c2.ok, committed: true, mode: res2.mode, plans: res2.plans, yielded: c2.yielded, perAgent: c2.perAgent };
           }
-          const res = await tower.planAndRun(text, inject ? { injectPlan: inject } : void 0);
+          const traceMeta = { nl: text, mode: activeClubhouse?.mode ?? "solo" };
+          const res = await tower.planAndRun(text, inject ? { injectPlan: inject, trace: traceMeta } : { trace: traceMeta });
           if (!res.ok) return { ok: false, code: res.code, message: res.message };
           const steps = res.steps;
           if (p?.commit !== true) return { ok: true, dryRun: true, steps };
           const c = await res.commit({ shouldYield });
           return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded };
+        }
+      })
+    );
+    ctx.subscriptions.push(
+      app.commands.register("tower.trace", {
+        description: "Query the control-tower session trace persisted via the host generic data store (app.data): recent plans (id, nl, mode, agent, createdAt, outcome) in most-recent-first order, and, when a planId is given, that plan's steps (axis, name, params/address, danger, status, outcome, ts) in execution order. Read-only observability of what the tower ran \u2014 survives reload. Use for audit, utterance-E2E verification, and AI automation.",
+        triggers: { ko: "\uD0C0\uC6CC trace \uC774\uB825 \uC138\uC158 plan step \uACB0\uACFC \uAC10\uC0AC \uC870\uD68C \uCEE8\uD2B8\uB864\uD0C0\uC6CC" },
+        params: {
+          plan: { type: "string", description: "A planId from a recent plan: return that plan's steps in execution order instead of the plan list." },
+          limit: { type: "number", description: "Max number of recent plans to return (default 20). Ignored when plan is given." }
+        },
+        handler: async (p) => {
+          if (!trace) return { ok: false, code: "DATA_UNAVAILABLE", message: "data \uC601\uC18D\uC774 \uBE44\uD65C\uC131(app.data \uBBF8\uC81C\uACF5)" };
+          const planId = typeof p?.plan === "string" && p.plan ? p.plan : void 0;
+          if (planId) {
+            const steps = await trace.stepsOf(planId);
+            return { ok: true, planId, steps };
+          }
+          const limit = Math.max(1, Math.min(200, Number(p?.limit) || 20));
+          const plans = await trace.recentPlans({ limit });
+          return { ok: true, session: trace.sessionId, plans };
         }
       })
     );

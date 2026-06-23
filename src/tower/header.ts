@@ -9,6 +9,7 @@
 import { createTowerModal, type TowerModal } from "./modal";
 import type { Planner, PlanRunResult, PlanRunOptions, DistRunResult, DistRunOptions } from "./executor";
 import type { PlanStep } from "./plan";
+import type { TraceSink } from "./trace";
 
 // ✦ — Lucide 'sparkle' 아웃라인(단일 4-point). 24 viewBox, currentColor stroke, fill 없음.
 //   다른 타이틀바 아이콘(sun/settings/panel-left)과 동일 기하라 단색 아웃라인으로 자연히 어울린다.
@@ -30,10 +31,11 @@ export interface TowerHandle {
 // label = 표시 텍스트(i18n "AI 명령"), lang = 현재 호스트 언어 접근자(locale.changed 로 갱신됨),
 // planner = slow-path planning 턴 seam(main.ts 가 Clubhouse 엔진 requestPlan 으로 주입) — 없으면 모달이
 //   slow-path 를 NO_PLANNER 로 보고(에이전트 미연결 시 정직하게).
-export function setupTower(app: any, label: string, lang: () => string, planner?: Planner): TowerHandle {
+// trace = 세션/trace 영속 sink(M7, app.data) — 모달 → executor 로 전달. 없으면 영속 0.
+export function setupTower(app: any, label: string, lang: () => string, planner?: Planner, trace?: TraceSink): TowerHandle {
   // 모달 상태 변화(열림/닫힘)는 onChange 한 채널로만 헤더 active 에 반영한다(이벤트-우선, 폴링 0).
   //   호출원(아이콘 클릭·닫기버튼·프로그램·향후 ⌘K) 무관하게 active 가 항상 정확.
-  const modal: TowerModal = createTowerModal({ title: label, lang, app, planner, onChange: () => render() });
+  const modal: TowerModal = createTowerModal({ title: label, lang, app, planner, trace, onChange: () => render() });
 
   // active 토글 상태를 액션에 반영하려면 같은 id 로 재등록한다(headerActions 가 id 교체 = 갱신).
   let unregister: (() => void) | null = null;

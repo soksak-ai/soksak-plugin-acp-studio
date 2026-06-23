@@ -14,6 +14,7 @@ import { createEngine } from "./engine";
 import { t, tp } from "./i18n";
 import { setupTower } from "./tower/header";
 import { TOWER_LIVE_TOPIC, type TowerLiveEvent } from "./tower/modal";
+import { createTrace, type DataApi, type TraceSink, type TracePlan, type TraceStep } from "./tower/trace";
 import {
   buildPrompt,
   detectMentions,
@@ -192,7 +193,16 @@ export default {
       const prompt = priorContext ? `${systemPrompt}\n\n[앞 에이전트들의 PLAN(의존 맥락)]\n${priorContext}` : systemPrompt;
       return engine.requestPlan({ agent: agentId }, prompt, cwd);
     };
-    const tower = setupTower(app, t("towerTitle", lang), () => lang, towerPlanner);
+    // ── 세션/trace 영속(M7) — 코어 generic app.data 위에 plan·step·outcome 을 기록(코어 커플링 0, raw SQL 0) ──
+    //   sessionId = 프로젝트 루트(있으면) — 같은 프로젝트의 타워 이력을 한 세션으로 묶고 reload 후에도 동일
+    //   키로 재조회된다(영속). 프로젝트 없으면 "default". app.data 가 ns=pluginId 로 격리한다.
+    //   data 권한 미부여(또는 호스트 미구현) 환경에선 app.data 부재 → trace=undefined(영속 0, 기능 무해 비활성).
+    const traceSessionId = (): string => app.project?.current?.()?.root || "default";
+    const trace: TraceSink | undefined = app.data
+      ? createTrace(app.data as DataApi, { sessionId: traceSessionId() })
+      : undefined;
+
+    const tower = setupTower(app, t("towerTitle", lang), () => lang, towerPlanner, trace);
     ctx.subscriptions.push({ dispose: () => tower.dispose() });
 
     // 활성 Clubhouse 상태 → 분배 옵션. 모드/참여자/진행자/이름을 라이브 상태에서 끌어온다(단일 진실).
@@ -299,19 +309,51 @@ export default {
           if (p?.distribute === true) {
             const opts = distOptions();
             if (!opts) return { ok: false, error: "활성 Clubhouse 뷰/참여자 없음(분배는 라이브 모드·로스터 필요)" };
-            const res = await tower.distributeAndRun(text, opts);
+            // trace 메타(M7) — commit 시 에이전트별 plan·step·outcome 이 app.data 에 영속된다.
+            const res = await tower.distributeAndRun(text, { ...opts, trace: { nl: text, mode: opts.mode } });
             if (!res.ok) return { ok: false, code: res.code, message: res.message };
             if (p?.commit !== true) return { ok: true, dryRun: true, mode: res.mode, plans: res.plans };
             const c = await res.commit({ shouldYield });
             return { ok: c.ok, committed: true, mode: res.mode, plans: res.plans, yielded: c.yielded, perAgent: c.perAgent };
           }
-          const res = await tower.planAndRun(text, inject ? { injectPlan: inject } : undefined);
+          // trace 메타(M7) — commit/discard 시 plan·step·outcome 이 app.data 에 영속(이벤트-우선).
+          //   mode 는 활성 뷰의 대화 모드(없으면 "solo"). nl = 원문(투명).
+          const traceMeta = { nl: text, mode: activeClubhouse?.mode ?? "solo" };
+          const res = await tower.planAndRun(text, inject ? { injectPlan: inject, trace: traceMeta } : { trace: traceMeta });
           if (!res.ok) return { ok: false, code: res.code, message: res.message };
           // dry-run 결과 — 검증된 step(축/이름/주소/파라미터) 그대로 노출(투명). 아직 실행 0.
           const steps = res.steps;
           if (p?.commit !== true) return { ok: true, dryRun: true, steps };
           const c = await res.commit({ shouldYield });
           return { ok: c.ok, committed: true, code: c.code, steps, results: c.results, yielded: c.yielded };
+        },
+      }),
+    );
+
+    // ── tower.trace(타워 세션/trace 조회 — 영속된 plan·step·결과 이력, RULE 8 관찰 가능) ──
+    // 현재 세션(프로젝트)의 최근 plan 들을 createdAt 내림차순으로, plan 옵션이 있으면 그 plan 의 step 을
+    //   seq 오름차순(실행 순서)으로 돌려준다. 영속이라 window.reload 후에도 같은 키로 재조회된다. data 권한
+    //   미부여 환경이면 trace=undefined → DATA_UNAVAILABLE 로 정직하게 보고(영속 비활성). 읽기 전용(비파괴).
+    ctx.subscriptions.push(
+      app.commands.register("tower.trace", {
+        description:
+          "Query the control-tower session trace persisted via the host generic data store (app.data): recent plans (id, nl, mode, agent, createdAt, outcome) in most-recent-first order, and, when a planId is given, that plan's steps (axis, name, params/address, danger, status, outcome, ts) in execution order. Read-only observability of what the tower ran — survives reload. Use for audit, utterance-E2E verification, and AI automation.",
+        triggers: { ko: "타워 trace 이력 세션 plan step 결과 감사 조회 컨트롤타워" },
+        params: {
+          plan: { type: "string", description: "A planId from a recent plan: return that plan's steps in execution order instead of the plan list." },
+          limit: { type: "number", description: "Max number of recent plans to return (default 20). Ignored when plan is given." },
+        },
+        handler: async (p: any) => {
+          if (!trace) return { ok: false, code: "DATA_UNAVAILABLE", message: "data 영속이 비활성(app.data 미제공)" };
+          const planId = typeof p?.plan === "string" && p.plan ? p.plan : undefined;
+          if (planId) {
+            const steps: TraceStep[] = await trace.stepsOf(planId);
+            return { ok: true, planId, steps };
+          }
+          const limit = Math.max(1, Math.min(200, Number(p?.limit) || 20));
+          const plans: TracePlan[] = await trace.recentPlans({ limit });
+          // session = sink 의 실제 키(쓰기·조회 동일) — 활성 후 프로젝트가 바뀌어도 이 sink 의 키는 고정.
+          return { ok: true, session: trace.sessionId, plans };
         },
       }),
     );

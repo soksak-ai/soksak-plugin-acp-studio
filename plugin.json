@@ -18,7 +18,8 @@
     "commands",
     "commands:inject",
     "programs",
-    "fs:read"
+    "fs:read",
+    "data"
   ],
   "dependencies": {
     "soksak-plugin-agents-acp": "^0.1.0"
@@ -126,6 +127,13 @@
         "title": {
           "en": "Tower Plan (slow-path, headless)",
           "ko": "컨트롤 타워 계획(slow-path NL→3축 plan, dry-run/commit)"
+        }
+      },
+      {
+        "name": "tower.trace",
+        "title": {
+          "en": "Tower Trace (session plan/step history)",
+          "ko": "컨트롤 타워 trace(세션 plan·step·결과 이력 조회)"
         }
       }
     ],
