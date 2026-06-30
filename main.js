@@ -70,6 +70,10 @@ var strings = {
     en: "Idle",
     ko: "\uB300\uAE30"
   },
+  busy: {
+    en: "Working\u2026",
+    ko: "\uC791\uC5C5 \uC911\u2026"
+  },
   modeFacil: {
     en: "Facil",
     ko: "\uC9C4\uD589"
@@ -2712,6 +2716,10 @@ var CSS2 = `
 .st-fail{align-self:flex-start;max-width:88%;font-size:11.5px;color:var(--danger-soft,#d77);border:1px solid var(--danger-soft,#d77);border-radius:8px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;opacity:.85}
 .st-box-time{display:block;text-align:right;font-size:9px;opacity:.5;margin-top:3px;font-variant-numeric:tabular-nums}
 @keyframes st-pulse{0%,100%{opacity:.25}50%{opacity:1}}
+/* \uC9C0\uC18D \uD65C\uB3D9 \uC778\uB514\uCF00\uC774\uD130 \u2014 running \uC778\uB370 \uD65C\uC131 \uC2A4\uD2B8\uB9AC\uBC0D \uBC1C\uD654\uAC00 \uC5C6\uB294 \uAD6C\uAC04(\uBC31\uADF8\uB77C\uC6B4\uB4DC \uC791\uC5C5 \uB300\uAE30\xB7\uD134
+   \uC0AC\uC774\xB7\uB2E4\uC74C \uBC1C\uD654 \uC900\uBE44)\uC5D0 "\uC791\uC5C5 \uC911\u2026"\uC744 \uD56D\uC0C1 \uBCF4\uC5EC \uB300\uD654\uAC00 \uBA48\uCD98 \uB4EF \uBCF4\uC774\uC9C0 \uC54A\uAC8C \uD55C\uB2E4. \uD65C\uC131 \uC2A4\uD2B8\uB9AC\uBC0D
+   \uB550 per-turn .st-pending(\uC751\uB2F5 \uC911\u2026)\uC774 \uB2F4\uB2F9\uD558\uBBC0\uB85C \uC774\uAC74 actives \uAC00 \uBE4C \uB54C\uB9CC \uB72C\uB2E4. */
+.st-busy{display:none;align-items:center;gap:6px;font-size:11px;color:var(--acc,#0a6fde);padding:0 12px 8px;flex:0 0 auto}
 .st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto;position:relative}
 .st-mention{position:absolute;left:10px;bottom:calc(100% + 4px);min-width:160px;background:var(--card,#262626);border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:20}
 .st-mention-item{display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:6px;cursor:pointer;font-size:12.5px}
@@ -3200,6 +3208,8 @@ ${priorContext}` : systemPrompt;
       const kibEl = el2("div", "st-kib");
       const status = el2("div", "st-status");
       const msgs = el2("div", "st-msgs");
+      const busy = el2("div", "st-busy");
+      busy.append(el2("span", "st-dot"), document.createTextNode(t("busy", lang)));
       const inrow = el2("div", "st-in");
       const ta = document.createElement("textarea");
       ta.placeholder = t("placeholder", lang);
@@ -3225,14 +3235,15 @@ ${priorContext}` : systemPrompt;
         msgs,
         tabsEl,
         kibEl,
-        status
+        status,
+        busy
       };
       states.set(container, st);
       activeClubhouse = st;
       buildKibitz(st);
       renderTabs(st, tabsEl);
       bar.append(elText2("b", "Clubhouse"), tabsEl, kibEl, status);
-      root.append(bar, msgs, inrow);
+      root.append(bar, msgs, busy, inrow);
       const doSend = () => {
         const t2 = ta.value.trim();
         if (!t2) return;
@@ -3410,6 +3421,9 @@ ${priorContext}` : systemPrompt;
     function setStatus(st, t2) {
       st.status.textContent = t2;
     }
+    function refreshBusy(st) {
+      st.busy.style.display = st.running && st.actives.size === 0 ? "flex" : "none";
+    }
     function onHuman(st, text, forceCut, onCancel) {
       if (!st.running) {
         st.conv.push({ who: "human", text });
@@ -3482,6 +3496,7 @@ ${priorContext}` : systemPrompt;
       }
       const cur = { agentId: speaker, connId, sessionId, row, bubble: null, liveRaw: "" };
       st.actives.add(cur);
+      refreshBusy(st);
       liveEmit({ kind: "start", who: nameOf(speaker), color: COLOR[speaker] });
       const off = app.bus.on(`acp.update.${connId}`, (evt) => onStream(cur, evt));
       let r;
@@ -3492,6 +3507,7 @@ ${priorContext}` : systemPrompt;
       }
       off.dispose();
       st.actives.delete(cur);
+      refreshBusy(st);
       const streamed = cur.liveRaw.trim();
       const work = r.ok && (r.text ?? "").trim() || streamed;
       if (work) {
@@ -3636,6 +3652,7 @@ ${priorContext}` : systemPrompt;
     }
     async function runLoop(st) {
       st.running = true;
+      refreshBusy(st);
       const ids = st.roster.map((x) => x.id);
       for (; ; ) {
         const scanFrom = st.conv.length;
@@ -3675,6 +3692,7 @@ ${priorContext}` : systemPrompt;
         return runLoop(st);
       }
       st.running = false;
+      refreshBusy(st);
       setStatus(st, t("statusIdle", lang));
     }
     function onStream(cur, evt) {

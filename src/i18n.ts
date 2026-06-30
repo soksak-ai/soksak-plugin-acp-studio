@@ -14,6 +14,10 @@ const strings = {
     en: "Idle",
     ko: "대기",
   },
+  busy: {
+    en: "Working…",
+    ko: "작업 중…",
+  },
   modeFacil: {
     en: "Facil",
     ko: "진행",

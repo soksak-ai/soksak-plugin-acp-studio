@@ -105,6 +105,10 @@ const CSS = `
 .st-fail{align-self:flex-start;max-width:88%;font-size:11.5px;color:var(--danger-soft,#d77);border:1px solid var(--danger-soft,#d77);border-radius:8px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;opacity:.85}
 .st-box-time{display:block;text-align:right;font-size:9px;opacity:.5;margin-top:3px;font-variant-numeric:tabular-nums}
 @keyframes st-pulse{0%,100%{opacity:.25}50%{opacity:1}}
+/* 지속 활동 인디케이터 — running 인데 활성 스트리밍 발화가 없는 구간(백그라운드 작업 대기·턴
+   사이·다음 발화 준비)에 "작업 중…"을 항상 보여 대화가 멈춘 듯 보이지 않게 한다. 활성 스트리밍
+   땐 per-turn .st-pending(응답 중…)이 담당하므로 이건 actives 가 빌 때만 뜬다. */
+.st-busy{display:none;align-items:center;gap:6px;font-size:11px;color:var(--acc,#0a6fde);padding:0 12px 8px;flex:0 0 auto}
 .st-in{display:flex;gap:8px;padding:8px 10px;border-top:1px solid rgba(127,127,127,.2);flex:0 0 auto;position:relative}
 .st-mention{position:absolute;left:10px;bottom:calc(100% + 4px);min-width:160px;background:var(--card,#262626);border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);z-index:20}
 .st-mention-item{display:flex;align-items:center;gap:5px;padding:5px 9px;border-radius:6px;cursor:pointer;font-size:12.5px}
@@ -157,6 +161,7 @@ interface ClubhouseState {
   tabsEl: HTMLElement; // 로스터 탭 컨테이너 — 세션 오류 시 자동 체크 해제 후 재렌더
   kibEl: HTMLElement; // 모드 토글(순차/진행/동시) 컨테이너 — setMode 가 버튼 하이라이트 동기화
   status: HTMLElement;
+  busy: HTMLElement; // 지속 활동 인디케이터(running & 활성 스트리밍 없음 구간) — refreshBusy 가 토글
 }
 
 export default {
@@ -755,6 +760,8 @@ export default {
       const kibEl = el("div", "st-kib");
       const status = el("div", "st-status");
       const msgs = el("div", "st-msgs");
+      const busy = el("div", "st-busy"); // 지속 활동 인디케이터(메시지와 입력창 사이) — 기본 숨김
+      busy.append(el("span", "st-dot"), document.createTextNode(t("busy", lang)));
       const inrow = el("div", "st-in");
       const ta = document.createElement("textarea");
       ta.placeholder = t("placeholder", lang);
@@ -781,6 +788,7 @@ export default {
         tabsEl,
         kibEl,
         status,
+        busy,
       };
       states.set(container, st);
       activeClubhouse = st; // 라이브 send 명령의 타겟(마지막 마운트 = 활성)
@@ -788,7 +796,7 @@ export default {
       buildKibitz(st); // 모드 버튼(순차/진행/동시) — 클릭은 setMode 통과
       renderTabs(st, tabsEl);
       bar.append(elText("b", "Clubhouse"), tabsEl, kibEl, status);
-      root.append(bar, msgs, inrow);
+      root.append(bar, msgs, busy, inrow);
 
       const doSend = () => {
         const t = ta.value.trim();
@@ -988,6 +996,12 @@ export default {
     function setStatus(st: ClubhouseState, t: string) {
       st.status.textContent = t;
     }
+    // 지속 활동 인디케이터 토글 — running 인데 활성 스트리밍 발화가 없을 때만 "작업 중…"을 띄운다
+    // (백그라운드 작업 대기·턴 사이·다음 발화 준비). 활성 스트리밍 땐 per-turn .st-pending 이 담당.
+    // running 토글·actives 변화 시마다 호출 → 대화가 멈춘 듯 보이는 빈 구간을 메운다.
+    function refreshBusy(st: ClubhouseState) {
+      st.busy.style.display = st.running && st.actives.size === 0 ? "flex" : "none";
+    }
 
     // 사람 발화 — LLM 이 멈춰 있으면 그냥 전송. 진행 중이면 모달을 띄워 어떻게 보낼지 고른다:
     //   지금 끊기 = 현재 발화 중단(engine.cancel) → 부분응답 종결 보존 → 그 뒤 세션 주입 → 재구동.
@@ -1082,6 +1096,7 @@ export default {
       // 버블은 아직 안 만든다 — "응답 중…" 인디케이터를 첫 스트리밍 청크(또는 최종 텍스트)까지 유지.
       const cur: Current = { agentId: speaker, connId, sessionId, row, bubble: null, liveRaw: "" };
       st.actives.add(cur); // 동시=N개 병렬 등록(각자 connId 로 독립 스트리밍)
+      refreshBusy(st); // 활성 스트리밍 시작 → 지속 인디케이터는 per-turn 점에 양보(숨김)
       liveEmit({ kind: "start", who: nameOf(speaker), color: COLOR[speaker] }); // 타워 라이브칸 발화 시작
       const off = app.bus.on(`acp.update.${connId}`, (evt: any) => onStream(cur, evt));
       let r: any;
@@ -1092,6 +1107,7 @@ export default {
       }
       off.dispose(); // app.bus.on 은 Disposable{dispose} 반환 — 함수 호출(off()) 은 throw → 구독 누수·누적
       st.actives.delete(cur);
+      refreshBusy(st); // 발화 종료 → 아직 running 이면 "작업 중…" 재노출(다음 발화/백그라운드 대기 구간)
       // work = 코어 dedup 최종 r.text 우선, 없으면 스트리밍된 부분(liveRaw — 참견 중단 시 '지금까지' 보존).
       const streamed = cur.liveRaw.trim();
       const work = (r.ok && (r.text ?? "").trim()) || streamed;
@@ -1264,6 +1280,7 @@ export default {
 
     async function runLoop(st: ClubhouseState) {
       st.running = true;
+      refreshBusy(st); // 대화 시작 → 첫 발화 스트리밍 전까지 "작업 중…" 노출
       const ids = st.roster.map((x) => x.id);
       for (;;) {
         const scanFrom = st.conv.length;
@@ -1308,6 +1325,7 @@ export default {
         return runLoop(st); // 꼬리재귀 — running 유지한 채 재구동
       }
       st.running = false;
+      refreshBusy(st); // 대화 종료 → 지속 인디케이터 숨김
       setStatus(st, t("statusIdle", lang));
     }
 
